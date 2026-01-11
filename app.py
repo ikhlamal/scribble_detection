@@ -366,6 +366,19 @@ def main():
             "Min Length (px)", 
             value=80, step=10
         )
+        
+        st.markdown("---")
+        st.header("🎯 Processing Options")
+        limit_actors = st.checkbox("Limit number of actors", value=False)
+        max_actors = None
+        if limit_actors:
+            max_actors = st.number_input(
+                "Max actors to process", 
+                min_value=1, 
+                value=10, 
+                step=1,
+                help="Process only first N actors (for testing)"
+            )
     
     if csv_file is None:
         st.info("👈 Please upload a CSV file to begin analysis")
@@ -404,22 +417,58 @@ def main():
     # Process each actor
     actor_data = {}
     
-    with st.spinner("🔍 Analyzing strokes..."):
-        for actor in actors:
-            actor_df = df_filtered[df_filtered['actor_name_id'] == actor].sort_values('timestamp').reset_index(drop=True)
-            results, canvas = detect_scribbles_for_actor(actor_df, refs)
-            
-            # Render images
-            img_clean, img_annotated = render_images(actor_df, results)
-            
-            actor_data[actor] = {
-                'df': actor_df,
-                'results': results,
-                'img_clean': img_clean,
-                'img_annotated': img_annotated
-            }
+    # Progress tracking
+    total_actors = len(actors)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    time_text = st.empty()
     
-    st.success("✅ Analysis complete!")
+    import time
+    start_time = time.time()
+    
+    for actor_idx, actor in enumerate(actors):
+        # Update progress
+        progress = (actor_idx) / total_actors
+        progress_bar.progress(progress)
+        
+        # Calculate ETA
+        elapsed_time = time.time() - start_time
+        if actor_idx > 0:
+            avg_time_per_actor = elapsed_time / actor_idx
+            remaining_actors = total_actors - actor_idx
+            eta_seconds = avg_time_per_actor * remaining_actors
+            eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+        else:
+            eta_str = "Calculating..."
+        
+        # Update status
+        status_text.markdown(f"**🔍 Analyzing Actor {actor_idx + 1}/{total_actors}:** `{actor}`")
+        time_text.markdown(f"⏱️ **ETA:** {eta_str} | **Elapsed:** {int(elapsed_time)}s")
+        
+        actor_df = df_filtered[df_filtered['actor_name_id'] == actor].sort_values('timestamp').reset_index(drop=True)
+        results, canvas = detect_scribbles_for_actor(actor_df, refs)
+        
+        # Render images
+        img_clean, img_annotated = render_images(actor_df, results)
+        
+        actor_data[actor] = {
+            'df': actor_df,
+            'results': results,
+            'img_clean': img_clean,
+            'img_annotated': img_annotated
+        }
+    
+    # Complete progress
+    progress_bar.progress(1.0)
+    total_time = time.time() - start_time
+    status_text.markdown(f"**✅ Analysis Complete!** Processed {total_actors} actor(s)")
+    time_text.markdown(f"⏱️ **Total Time:** {int(total_time // 60)}m {int(total_time % 60)}s")
+    
+    # Clear progress after a moment
+    time.sleep(1)
+    progress_bar.empty()
+    status_text.empty()
+    time_text.empty()
     
     # Create Gantt Chart Data
     st.markdown("---")

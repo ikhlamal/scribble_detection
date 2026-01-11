@@ -28,28 +28,10 @@ CANVAS_SIZE = (900, 1100)
 STROKE_WIDTH = 3
 
 CONFIG = {
-    # Karakteristik utama scribble
-    'repetitive_area_threshold': 4,      # berapa kali stroke lewat area yang sama
-    'dense_crossing_threshold': 3,        # berapa kali stroke crossing
-    'min_scribble_area': 1200,           # minimum area
-    'min_stroke_length': 80,             # minimum length
-    
-    # Geometric chaos indicators
-    'sharp_turn_angle': 100,             # derajat untuk sharp turn
-    'min_sharp_turns': 4,                # minimal sharp turns untuk scribble
-    'density_in_bbox': 0.08,             # density tinggi
-    
-    # Pattern matching
-    'use_pattern_matching': True,
-    'pattern_threshold': 0.45,
-    'pattern_weight': 0.50,              # weight besar untuk pattern
-    
-    # Heatmap-based detection
-    'use_heatmap': True,
-    'heatmap_intensity_threshold': 30,   # intensity threshold
-    
-    # Final scoring
-    'scribble_score_threshold': 0.55,
+    # Pattern matching - SATU-SATUNYA FAKTOR
+    'pattern_threshold': 0.45,           # threshold untuk classify sebagai scribble
+    'min_scribble_area': 500,            # minimum area stroke (filter noise)
+    'min_stroke_length': 50,             # minimum length stroke (filter noise)
 }
 
 # =========================
@@ -91,49 +73,11 @@ def load_scribble_refs(folder, size=(150, 150)):
     return refs
 
 
-def create_heatmap(canvas, cell_size=20):
-    """Buat heatmap untuk deteksi area dengan banyak stroke overlap"""
-    h, w = canvas.shape
-    heatmap = np.zeros((h // cell_size + 1, w // cell_size + 1), dtype=np.int32)
-    
-    # Hitung intensitas per cell
-    for i in range(0, h, cell_size):
-        for j in range(0, w, cell_size):
-            cell = canvas[i:min(i+cell_size, h), j:min(j+cell_size, w)]
-            # Hitung berapa banyak pixel hitam (stroke)
-            black_pixels = np.sum(cell < 200)
-            heatmap[i // cell_size, j // cell_size] = black_pixels
-    
-    return heatmap
-
-
-def check_heatmap_intensity(heatmap, bbox, cell_size=20):
-    """Cek intensitas heatmap di area bbox"""
-    x1, y1, x2, y2 = bbox
-    
-    i1 = int(y1) // cell_size
-    j1 = int(x1) // cell_size
-    i2 = int(y2) // cell_size
-    j2 = int(x2) // cell_size
-    
-    i1 = max(0, i1)
-    j1 = max(0, j1)
-    i2 = min(heatmap.shape[0] - 1, i2)
-    j2 = min(heatmap.shape[1] - 1, j2)
-    
-    if i2 <= i1 or j2 <= j1:
-        return 0
-    
-    region = heatmap[i1:i2+1, j1:j2+1]
-    return np.max(region)
-
-
-def analyze_stroke_simple(points):
-    """Analisis sederhana tapi efektif"""
-    if len(points) < 3:
+def get_stroke_bbox_and_metrics(points):
+    """Get bounding box and basic metrics"""
+    if len(points) < 2:
         return None
     
-    # Bounding box
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     x1, y1 = min(xs), min(ys)
@@ -142,59 +86,23 @@ def analyze_stroke_simple(points):
     bbox_h = y2 - y1 + 1
     bbox_area = bbox_w * bbox_h
     
-    # Length
+    # Calculate length
     length = 0
     for i in range(len(points) - 1):
         dx = points[i+1][0] - points[i][0]
         dy = points[i+1][1] - points[i][1]
         length += math.sqrt(dx*dx + dy*dy)
     
-    # Sharp turns
-    sharp_turns = 0
-    for i in range(1, len(points) - 1):
-        v1 = np.array([points[i][0] - points[i-1][0], points[i][1] - points[i-1][1]])
-        v2 = np.array([points[i+1][0] - points[i][0], points[i+1][1] - points[i][1]])
-        
-        norm1 = np.linalg.norm(v1)
-        norm2 = np.linalg.norm(v2)
-        
-        if norm1 > 1e-6 and norm2 > 1e-6:
-            cos_angle = np.dot(v1, v2) / (norm1 * norm2)
-            cos_angle = np.clip(cos_angle, -1, 1)
-            angle = np.degrees(np.arccos(cos_angle))
-            
-            if angle > CONFIG['sharp_turn_angle']:
-                sharp_turns += 1
-    
-    # Density
-    density = length / (bbox_area + 1e-6)
-    
-    # Self-crossing detection (simplified)
-    crossings = 0
-    if len(points) > 10:
-        # Sample points untuk cek crossing
-        step = max(1, len(points) // 20)
-        for i in range(0, len(points) - step, step):
-            p1 = points[i]
-            for j in range(i + step * 2, len(points) - step, step):
-                p2 = points[j]
-                dist = math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
-                if dist < 15:  # Threshold untuk crossing
-                    crossings += 1
-    
     return {
         'bbox': (x1, y1, x2, y2),
         'bbox_area': bbox_area,
         'length': length,
-        'density': density,
-        'sharp_turns': sharp_turns,
-        'crossings': crossings,
         'points': points
     }
 
 
 def match_with_references(canvas, bbox, refs):
-    """Match region dengan references"""
+    """Match region dengan references - HANYA INI yang menentukan scribble"""
     if len(refs) == 0:
         return 0.0
     
@@ -243,54 +151,17 @@ def match_with_references(canvas, bbox, refs):
         except:
             score3 = 0
         
-        # Combined
+        # Combined - ambil yang tertinggi
         combined = max(score1, score2, score3)
         max_score = max(max_score, combined)
     
     return max_score
 
 
-def calculate_scribble_score(geom, heatmap_intensity, pattern_score):
-    """Scoring sederhana dan jelas"""
-    
-    # Size filter
-    if geom['bbox_area'] < CONFIG['min_scribble_area']:
-        return 0.0
-    if geom['length'] < CONFIG['min_stroke_length']:
-        return 0.0
-    
-    score = 0.0
-    
-    # 1. Pattern matching (PALING PENTING)
-    if CONFIG['use_pattern_matching'] and pattern_score > CONFIG['pattern_threshold']:
-        score += CONFIG['pattern_weight']
-        # Bonus jika sangat mirip
-        if pattern_score > 0.7:
-            score += 0.20
-    
-    # 2. Geometric chaos
-    if geom['sharp_turns'] >= CONFIG['min_sharp_turns']:
-        score += 0.20
-    
-    if geom['density'] > CONFIG['density_in_bbox']:
-        score += 0.15
-    
-    # 3. Self-crossing (sangat indikasi scribble)
-    if geom['crossings'] >= CONFIG['dense_crossing_threshold']:
-        score += 0.25
-    
-    # 4. Heatmap intensity (area overlap tinggi)
-    if CONFIG['use_heatmap'] and heatmap_intensity > CONFIG['heatmap_intensity_threshold']:
-        score += 0.15
-    
-    return min(score, 1.0)
-
-
 def detect_scribbles_for_actor(strokes_data, refs):
-    """Detect scribbles untuk satu actor"""
+    """Detect scribbles untuk satu actor - HANYA BERDASARKAN PATTERN MATCHING"""
     # Init canvas
     canvas = np.ones(CANVAS_SIZE[::-1], dtype=np.uint8) * 255
-    heatmap = np.zeros((CANVAS_SIZE[1] // 20 + 1, CANVAS_SIZE[0] // 20 + 1), dtype=np.int32)
     
     results = []
     
@@ -304,41 +175,34 @@ def detect_scribbles_for_actor(strokes_data, refs):
         pts_int = [(int(x), int(y)) for x, y in pts]
         cv2.polylines(canvas, [np.array(pts_int)], False, 0, STROKE_WIDTH)
         
-        # Update heatmap
-        if CONFIG['use_heatmap']:
-            heatmap = create_heatmap(canvas, cell_size=20)
-        
-        # Analyze
-        geom = analyze_stroke_simple(pts)
-        if geom is None:
+        # Get basic metrics
+        metrics = get_stroke_bbox_and_metrics(pts)
+        if metrics is None:
             continue
         
-        # Pattern matching
-        pattern_score = 0.0
-        if CONFIG['use_pattern_matching'] and len(refs) > 0:
-            pattern_score = match_with_references(canvas, geom['bbox'], refs)
-        
-        # Heatmap intensity
-        heatmap_intensity = 0
-        if CONFIG['use_heatmap']:
-            heatmap_intensity = check_heatmap_intensity(heatmap, geom['bbox'], cell_size=20)
-        
-        # Calculate score
-        scribble_score = calculate_scribble_score(geom, heatmap_intensity, pattern_score)
-        
-        # Classify
-        is_scribble = scribble_score > CONFIG['scribble_score_threshold']
+        # Filter noise berdasarkan size
+        if metrics['bbox_area'] < CONFIG['min_scribble_area']:
+            is_scribble = False
+            pattern_score = 0.0
+        elif metrics['length'] < CONFIG['min_stroke_length']:
+            is_scribble = False
+            pattern_score = 0.0
+        else:
+            # Pattern matching - INI SATU-SATUNYA YANG MENENTUKAN
+            if len(refs) > 0:
+                pattern_score = match_with_references(canvas, metrics['bbox'], refs)
+                is_scribble = pattern_score > CONFIG['pattern_threshold']
+            else:
+                pattern_score = 0.0
+                is_scribble = False
         
         results.append({
             'uniqId': row['uniqId'],
             'timestamp': row['timestamp'],
             'is_scribble': is_scribble,
-            'score': scribble_score,
-            'pattern': pattern_score,
-            'heatmap': heatmap_intensity,
-            'sharp_turns': geom['sharp_turns'],
-            'crossings': geom['crossings'],
-            'bbox_area': geom['bbox_area'],
+            'pattern_score': pattern_score,
+            'bbox_area': metrics['bbox_area'],
+            'length': metrics['length'],
             'points': pts
         })
     
@@ -362,9 +226,9 @@ def render_images(strokes_data, scribble_results):
         
         # Color
         if result['is_scribble']:
-            # Scribble = red with intensity based on confidence
-            confidence = result['score']
-            red = int(200 + 55 * confidence)
+            # Scribble = red with intensity based on pattern score
+            confidence = result['pattern_score']
+            red = int(200 + 55 * min(confidence, 1.0))
             color = (red, 0, 0)
             text_color = (0, 200, 0)  # Green text
         else:
@@ -399,6 +263,7 @@ def render_images(strokes_data, scribble_results):
 # =========================
 def main():
     st.title("✍️ Scribble Detection Dashboard")
+    st.markdown("**Detection Method:** Pattern Matching dengan Reference Images Only")
     st.markdown("---")
 
     # ======================================================
@@ -477,7 +342,9 @@ def main():
     if refs:
         st.success(f"✅ Loaded {len(refs)} reference scribble images")
     else:
-        st.warning("⚠️ Tidak ada reference scribble image")
+        st.error("❌ Tidak ada reference scribble image - Detection tidak bisa berjalan!")
+        st.info("💡 Tambahkan reference scribble images di folder 'scribble_refs'")
+        return
 
     # ======================================================
     # PROCESS EACH ACTOR
@@ -560,10 +427,9 @@ def main():
                 'Finish': finish_time,
                 'Type': 'Scribble' if result['is_scribble'] else 'Writing',
                 'UniqId': row.uniqId,
-                'Score': result['score'],
-                'Pattern': result['pattern'],
-                'SharpTurns': result['sharp_turns'],
-                'Crossings': result['crossings']
+                'PatternScore': result['pattern_score'],
+                'Area': result['bbox_area'],
+                'Length': result['length']
             })
 
     gantt_df = pd.DataFrame(gantt_data)
@@ -579,7 +445,7 @@ def main():
             'Writing': 'black',
             'Scribble': 'red'
         },
-        hover_data=['Stroke', 'UniqId', 'Score', 'Pattern', 'SharpTurns', 'Crossings'],
+        hover_data=['Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'],
         title='Stroke Activity Timeline by Actor'
     )
     
@@ -612,11 +478,14 @@ def main():
     total_strokes = len(gantt_df)
     total_scribbles = len(gantt_df[gantt_df['Type'] == 'Scribble'])
     total_writing = len(gantt_df[gantt_df['Type'] == 'Writing'])
+    
+    avg_pattern_score_scribbles = gantt_df[gantt_df['Type'] == 'Scribble']['PatternScore'].mean() if total_scribbles > 0 else 0
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Strokes", total_strokes)
     c2.metric("Scribbles", total_scribbles)
     c3.metric("Writing", total_writing)
+    c4.metric("Avg Pattern Score (Scribbles)", f"{avg_pattern_score_scribbles:.3f}")
 
     # ======================================================
     # IMAGES PER ACTOR
@@ -646,8 +515,8 @@ def main():
 
                 st.dataframe(
                     actor_strokes[
-                        ['Stroke', 'Type', 'UniqId', 'Score', 'Pattern', 'SharpTurns', 'Crossings', 'Start', 'Finish']
-                    ],
+                        ['Stroke', 'Type', 'UniqId', 'PatternScore', 'Area', 'Length', 'Start', 'Finish']
+                    ].sort_values('PatternScore', ascending=False),
                     use_container_width=True
                 )
 

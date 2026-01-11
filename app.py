@@ -318,7 +318,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     # === STEP 3: POST-PROCESSING - Filter isolated/short scribble sequences ===
     results = post_process_isolated_scribbles(
         results, 
-        window_size=CONFIG.get('continuity_window', 3),
+        window_size=CONFIG.get('continuity_window', 1),
         min_consecutive=CONFIG.get('min_consecutive', 4)
     )
     

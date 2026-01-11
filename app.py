@@ -87,9 +87,11 @@ def analyze_stroke_complexity(points):
     if len(points) < 3:
         return {
             'direction_changes': 0,
-            'density_ratio': 0,
+            'density_ratio':  0,
             'linearity': 1.0,
-            'is_complex': False
+            'is_complex': False,
+            'bbox_area': 0,      # Fixed: added missing key
+            'length': 0          # Fixed: added missing key
         }
     
     # 1. Direction changes (berapa kali arah berubah signifikan)
@@ -148,14 +150,13 @@ def analyze_stroke_complexity(points):
     )
     
     return {
-        'direction_changes': direction_changes,
+        'direction_changes':  direction_changes,
         'density_ratio': density_ratio,
         'linearity': linearity,
         'is_complex': is_complex,
         'bbox_area': bbox_area,
         'length': length
     }
-
 
 def get_stroke_bbox(points):
     """Get bounding box"""

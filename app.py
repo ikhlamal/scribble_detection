@@ -516,7 +516,7 @@ def main():
                 st.dataframe(
                     actor_strokes[
                         ['Stroke', 'Type', 'UniqId', 'PatternScore', 'Area', 'Length', 'Start', 'Finish']
-                    ].sort_values('PatternScore', ascending=False),
+                    ],
                     use_container_width=True
                 )
 

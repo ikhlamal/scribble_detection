@@ -107,7 +107,7 @@ def match_with_references(canvas, bbox, refs):
         return 0.0
     
     x1, y1, x2, y2 = bbox
-    margin = 60
+    margin = 80
     
     x1 = max(0, int(x1) - margin)
     y1 = max(0, int(y1) - margin)

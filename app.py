@@ -32,6 +32,7 @@ CONFIG = {
     'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
     'min_scribble_area': 2000,           # minimum area stroke (filter noise)
     'min_stroke_length': 50,             # minimum length stroke (filter noise)
+    'continuity_window': 3,              # window size untuk post-processing isolated scribbles
 }
 
 # =========================
@@ -158,6 +159,73 @@ def match_with_references(canvas, bbox, refs):
     return max_score
 
 
+def is_stroke_complex(points, bbox_area, length):
+    """
+    Tentukan apakah stroke kompleks (layak jadi scribble meski isolated).
+    Stroke kompleks = banyak titik, panjang, atau area besar
+    """
+    num_points = len(points)
+    
+    # Kriteria kompleksitas
+    is_long = length > 300  # stroke panjang
+    is_large_area = bbox_area > 8000  # area besar
+    is_many_points = num_points > 20  # banyak titik
+    
+    # Kompleks jika memenuhi salah satu kriteria dengan margin
+    return is_long or is_large_area or is_many_points
+
+
+def post_process_isolated_scribbles(results, window_size=3):
+    """
+    POST-PROCESSING: Filter scribbles yang isolated (tidak beruntun).
+    
+    Logic:
+    - Scribble yang isolated (tidak ada scribble lain dalam window_size stroke) 
+      akan di-filter KECUALI stroke tersebut kompleks.
+    - Scribble yang beruntun (ada scribble lain dalam window) = valid scribble
+    
+    Args:
+        results: list of detection results
+        window_size: jarak maksimal untuk dianggap "beruntun"
+    """
+    if len(results) == 0:
+        return results
+    
+    # Create copy untuk modifikasi
+    processed = results.copy()
+    
+    # Find all scribble indices
+    scribble_indices = [i for i, r in enumerate(results) if r['is_scribble']]
+    
+    # Check each scribble
+    for idx in scribble_indices:
+        result = results[idx]
+        
+        # Check if complex stroke (exception)
+        if is_stroke_complex(result['points'], result['bbox_area'], result['length']):
+            # Stroke kompleks, tetap scribble meski isolated
+            continue
+        
+        # Check if has nearby scribbles (within window)
+        has_nearby_scribble = False
+        
+        for other_idx in scribble_indices:
+            if other_idx == idx:
+                continue
+            
+            distance = abs(other_idx - idx)
+            if distance <= window_size:
+                has_nearby_scribble = True
+                break
+        
+        # If isolated and not complex -> NOT scribble (false positive)
+        if not has_nearby_scribble:
+            processed[idx]['is_scribble'] = False
+            processed[idx]['was_filtered'] = True  # mark for debugging
+    
+    return processed
+
+
 def detect_scribbles_incremental(strokes_data, refs):
     """
     INCREMENTAL DETECTION:
@@ -165,6 +233,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     - Tiap stroke ditambah satu per satu
     - Setelah stroke ditambah, cek apakah area stroke tersebut sekarang scribble
     - Stroke yang membuat deteksi scribble = dilabeli scribble
+    - POST-PROCESSING: Filter isolated scribbles
     """
     # Init canvas kosong
     canvas = np.ones(CANVAS_SIZE[::-1], dtype=np.uint8) * 255
@@ -182,7 +251,8 @@ def detect_scribbles_incremental(strokes_data, refs):
                 'pattern_score': 0.0,
                 'bbox_area': 0,
                 'length': 0,
-                'points': pts
+                'points': pts,
+                'was_filtered': False
             })
             continue
         
@@ -196,7 +266,8 @@ def detect_scribbles_incremental(strokes_data, refs):
                 'pattern_score': 0.0,
                 'bbox_area': 0,
                 'length': 0,
-                'points': pts
+                'points': pts,
+                'was_filtered': False
             })
             continue
         
@@ -222,8 +293,12 @@ def detect_scribbles_incremental(strokes_data, refs):
             'pattern_score': pattern_score,
             'bbox_area': metrics['bbox_area'],
             'length': metrics['length'],
-            'points': pts
+            'points': pts,
+            'was_filtered': False
         })
+    
+    # === STEP 3: POST-PROCESSING - Filter isolated scribbles ===
+    results = post_process_isolated_scribbles(results, window_size=CONFIG.get('continuity_window', 3))
     
     return results, canvas
 
@@ -284,6 +359,7 @@ def main():
     st.title("✍️ Incremental Scribble Detection Dashboard")
     st.markdown("**Detection Method:** Pattern Matching (Original) + Incremental Canvas Update")
     st.markdown("🔄 **Incremental:** Deteksi stroke yang memicu munculnya scribble")
+    st.markdown("🧹 **Post-Processing:** Filter isolated scribbles (false positives)")
     st.markdown("---")
 
     # ======================================================
@@ -309,30 +385,45 @@ def main():
 
     # Configuration
     with st.expander("⚙️ Detection Configuration"):
-        CONFIG['pattern_threshold'] = st.slider(
-            "Pattern Threshold",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.55,
-            step=0.05,
-            help="Threshold untuk classify sebagai scribble"
-        )
-        CONFIG['min_scribble_area'] = st.number_input(
-            "Min Scribble Area",
-            min_value=100,
-            max_value=10000,
-            value=2000,
-            step=100,
-            help="Minimum area stroke untuk filter noise"
-        )
-        CONFIG['min_stroke_length'] = st.number_input(
-            "Min Stroke Length",
-            min_value=10,
-            max_value=500,
-            value=50,
-            step=10,
-            help="Minimum length stroke untuk filter noise"
-        )
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Pattern Matching**")
+            CONFIG['pattern_threshold'] = st.slider(
+                "Pattern Threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.55,
+                step=0.05,
+                help="Threshold untuk classify sebagai scribble"
+            )
+            CONFIG['min_scribble_area'] = st.number_input(
+                "Min Scribble Area",
+                min_value=100,
+                max_value=10000,
+                value=2000,
+                step=100,
+                help="Minimum area stroke untuk filter noise"
+            )
+        
+        with col2:
+            st.markdown("**Post-Processing**")
+            CONFIG['min_stroke_length'] = st.number_input(
+                "Min Stroke Length",
+                min_value=10,
+                max_value=500,
+                value=50,
+                step=10,
+                help="Minimum length stroke untuk filter noise"
+            )
+            CONFIG['continuity_window'] = st.slider(
+                "Continuity Window",
+                min_value=1,
+                max_value=10,
+                value=3,
+                step=1,
+                help="Window untuk filter isolated scribbles (stroke harus beruntun dalam N stroke)"
+            )
 
     # Submit button
     submitted = st.button("🚀 Submit & Process", type="primary")
@@ -532,17 +623,23 @@ def main():
     total_scribbles = len(gantt_df[gantt_df['Type'] == 'Scribble'])
     total_writing = len(gantt_df[gantt_df['Type'] == 'Writing'])
     
+    # Count filtered scribbles
+    total_filtered = sum(1 for actor in actors for r in actor_data[actor]['results'] if r.get('was_filtered', False))
+    
     avg_pattern_score_scribbles = gantt_df[gantt_df['Type'] == 'Scribble']['PatternScore'].mean() if total_scribbles > 0 else 0
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Strokes", total_strokes)
     c2.metric("Scribbles", total_scribbles)
     c3.metric("Writing", total_writing)
-    c4.metric("Avg Pattern Score (Scribbles)", f"{avg_pattern_score_scribbles:.3f}")
+    c4.metric("Filtered (False +)", total_filtered)
 
     if total_strokes > 0:
         scribble_rate = (total_scribbles / total_strokes) * 100
-        st.markdown(f"**Scribble Rate:** {scribble_rate:.2f}%")
+        st.markdown(f"**Scribble Rate:** {scribble_rate:.2f}% | **Avg Pattern Score:** {avg_pattern_score_scribbles:.3f}")
+    
+    if total_filtered > 0:
+        st.info(f"ℹ️ **Post-processing:** {total_filtered} isolated scribble(s) filtered sebagai false positive")
 
     # ======================================================
     # IMAGES PER ACTOR

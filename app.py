@@ -9,17 +9,14 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 from skimage.metrics import structural_similarity as ssim
-from scipy import ndimage
-from scipy.spatial. distance import cosine
 import io
 import base64
-from collections import defaultdict
 
 # =========================
 # PAGE CONFIG
 # =========================
-st. set_page_config(
-    page_title="Scribble Detection Dashboard",
+st.set_page_config(
+    page_title="Sequential Scribble Detection Dashboard",
     page_icon="✍️",
     layout="wide"
 )
@@ -31,22 +28,11 @@ CANVAS_SIZE = (900, 1100)
 STROKE_WIDTH = 3
 
 CONFIG = {
-    # Similarity thresholds (LEBIH KETAT)
-    'similarity_threshold': 0.55,        # threshold untuk combined similarity
-    'min_matching_refs': 2,              # minimal match dengan N references
-    
-    # Area-based detection (SEQUENTIAL)
-    'min_scribble_region_area': 3000,    # minimum area untuk region scribble
-    'density_threshold': 0.15,           # minimal density untuk scribble (15% area terisi)
-    'overlap_threshold': 0.3,            # minimal overlap ratio untuk scribble
-    
-    # Incremental detection
-    'region_margin': 80,                 # margin untuk region analysis
-    'min_strokes_in_region': 3,          # minimal stroke overlap untuk scribble
-    
-    # Texture features
-    'entropy_threshold': 4.5,            # minimal entropy (randomness)
-    'edge_density_threshold': 0.12,      # minimal edge density
+    # Pattern matching threshold
+    'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
+    'min_scribble_area': 2000,           # minimum area untuk dianggap scribble
+    'scan_grid_size': 150,               # ukuran grid untuk scanning canvas
+    'scan_overlap': 50,                  # overlap antar grid untuk deteksi yang lebih baik
 }
 
 # =========================
@@ -72,201 +58,168 @@ def parse_stroke(stroke_str):
 
 
 def load_scribble_refs(folder, size=(150, 150)):
-    """Load reference scribbles dengan preprocessing"""
+    """Load reference scribbles"""
     refs = []
-    refs_features = []
-    
     if not os.path.exists(folder):
-        return refs, refs_features
+        return refs
         
     for fn in os.listdir(folder):
         if fn.lower().endswith((".png", ".jpg", ".jpeg")):
             img = Image.open(os.path.join(folder, fn)).convert("L")
+            # Preprocessing: threshold untuk binary
             img_arr = np.array(img)
-            
-            # Preprocessing
             _, img_arr = cv2.threshold(img_arr, 127, 255, cv2.THRESH_BINARY)
             img_resized = cv2.resize(img_arr, size)
-            
-            # Extract features untuk reference
-            features = extract_texture_features(img_resized)
-            
             refs.append(img_resized)
-            refs_features.append(features)
-    
-    return refs, refs_features
+    return refs
 
 
-def extract_texture_features(img):
-    """Extract texture features untuk similarity comparison"""
-    features = {}
+def match_region_with_references(region, refs):
+    """Match region dengan references menggunakan multiple metrics"""
+    if len(refs) == 0 or region.size == 0:
+        return 0.0
     
-    # 1. Entropy (randomness/chaos)
-    hist, _ = np.histogram(img. ravel(), bins=256, range=(0, 256))
-    hist = hist / hist.sum()
-    hist = hist[hist > 0]
-    features['entropy'] = -np.sum(hist * np. log2(hist))
+    # Resize region ke ukuran reference
+    target_size = refs[0].shape
+    try:
+        region_resized = cv2.resize(region, (target_size[1], target_size[0]))
+    except:
+        return 0.0
     
-    # 2. Edge density
-    edges = cv2.Canny(img, 50, 150)
-    features['edge_density'] = np. sum(edges > 0) / (img.shape[0] * img.shape[1])
+    # Threshold untuk binary
+    _, region_bin = cv2.threshold(region_resized, 127, 255, cv2.THRESH_BINARY)
     
-    # 3. Ink density
-    features['ink_density'] = np. sum(img < 128) / (img.shape[0] * img.shape[1])
+    max_score = 0.0
+    for ref in refs:
+        # SSIM (Structural Similarity)
+        try:
+            score1 = ssim(region_bin, ref, data_range=255)
+        except:
+            score1 = 0
+        
+        # Template matching - CCOEFF
+        try:
+            result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCOEFF_NORMED)
+            _, score2, _, _ = cv2.minMaxLoc(result)
+        except:
+            score2 = 0
+        
+        # Template matching - CCORR
+        try:
+            result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCORR_NORMED)
+            _, score3, _, _ = cv2.minMaxLoc(result)
+        except:
+            score3 = 0
+        
+        # Combined - ambil yang tertinggi
+        combined = max(score1, score2, score3)
+        max_score = max(max_score, combined)
     
-    # 4. Orientation histogram (HOG-like)
-    sobelx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
-    angles = np.arctan2(sobely, sobelx)
-    
-    # Histogram of orientations (8 bins)
-    hist_orient, _ = np.histogram(angles[edges > 0], bins=8, range=(-np.pi, np.pi))
-    hist_orient = hist_orient / (hist_orient.sum() + 1e-6)
-    features['orientation_hist'] = hist_orient
-    
-    # 5. Spatial frequency
-    f_transform = np.fft.fft2(img)
-    f_shift = np.fft.fftshift(f_transform)
-    magnitude_spectrum = np.abs(f_shift)
-    features['spatial_frequency'] = np.mean(magnitude_spectrum)
-    
-    return features
+    return max_score
 
 
-def compute_similarity_score(region, refs, refs_features):
+def scan_canvas_for_scribbles(canvas, refs, grid_size=150, overlap=50):
     """
-    Compute comprehensive similarity score dengan multiple methods
-    LEBIH OPTIMAL: kombinasi texture, structure, dan pattern
+    Scan SELURUH canvas menggunakan sliding window untuk detect scribble patterns.
+    Returns: list of detected scribble regions dengan scores dan locations.
     """
     if len(refs) == 0:
-        return 0.0, 0
+        return []
     
-    # Extract features dari region
-    region_features = extract_texture_features(region)
+    height, width = canvas.shape
+    step = grid_size - overlap
     
-    scores = []
+    detected_regions = []
     
-    for ref, ref_features in zip(refs, refs_features):
-        # Resize region ke ukuran reference
-        try:
-            region_resized = cv2.resize(region, (ref.shape[1], ref. shape[0]))
-        except:
-            scores.append(0.0)
-            continue
-        
-        # Method 1: SSIM (structural similarity)
-        try:
-            score_ssim = ssim(region_resized, ref, data_range=255)
-        except:
-            score_ssim = 0
-        
-        # Method 2: Edge-based SSIM
-        region_edges = cv2.Canny(region_resized, 50, 150)
-        ref_edges = cv2.Canny(ref, 50, 150)
-        try:
-            score_edge_ssim = ssim(region_edges, ref_edges, data_range=255)
-        except:
-            score_edge_ssim = 0
-        
-        # Method 3: Feature similarity (PENTING untuk texture!)
-        # Entropy similarity
-        entropy_diff = abs(region_features['entropy'] - ref_features['entropy'])
-        score_entropy = 1.0 / (1.0 + entropy_diff)
-        
-        # Edge density similarity
-        edge_density_diff = abs(region_features['edge_density'] - ref_features['edge_density'])
-        score_edge_density = 1.0 / (1.0 + edge_density_diff * 10)
-        
-        # Ink density similarity
-        ink_density_diff = abs(region_features['ink_density'] - ref_features['ink_density'])
-        score_ink_density = 1.0 / (1.0 + ink_density_diff * 5)
-        
-        # Orientation similarity (cosine similarity)
-        try:
-            score_orientation = 1.0 - cosine(
-                region_features['orientation_hist'],
-                ref_features['orientation_hist']
-            )
-            if np.isnan(score_orientation):
-                score_orientation = 0
-        except:
-            score_orientation = 0
-        
-        # Method 4: Template matching
-        try:
-            result = cv2.matchTemplate(region_resized, ref, cv2.TM_CCOEFF_NORMED)
-            _, score_template, _, _ = cv2.minMaxLoc(result)
-        except:
-            score_template = 0
-        
-        # COMBINED SCORE (weighted)
-        combined = (
-            score_ssim * 0.15 +              # Structure
-            score_edge_ssim * 0.25 +         # Edge structure
-            score_entropy * 0.20 +           # Chaos/randomness (PENTING!)
-            score_edge_density * 0.15 +      # Edge density
-            score_ink_density * 0.10 +       # Ink coverage
-            score_orientation * 0.10 +       # Orientation pattern
-            score_template * 0.05            # Template match
-        )
-        
-        scores.append(combined)
+    # Sliding window scan
+    for y in range(0, height - grid_size + 1, step):
+        for x in range(0, width - grid_size + 1, step):
+            # Extract region
+            region = canvas[y:y+grid_size, x:x+grid_size]
+            
+            # Skip mostly white regions (no ink)
+            non_white_pixels = np.sum(region < 250)
+            if non_white_pixels < 100:  # threshold minimum ink
+                continue
+            
+            # Match dengan references
+            score = match_region_with_references(region, refs)
+            
+            if score > CONFIG['pattern_threshold']:
+                detected_regions.append({
+                    'bbox': (x, y, x+grid_size, y+grid_size),
+                    'score': score,
+                    'center': (x + grid_size//2, y + grid_size//2)
+                })
     
-    # Return max score dan jumlah yang match
-    max_score = max(scores) if scores else 0.0
-    matching_refs = sum(1 for s in scores if s > CONFIG['similarity_threshold'])
-    
-    return max_score, matching_refs
+    return detected_regions
 
 
-def get_stroke_bbox(points, margin=0):
-    """Get bounding box with margin"""
-    if len(points) < 2:
-        return None
+def regions_overlap(region1, region2):
+    """Check if two regions overlap"""
+    x1_1, y1_1, x2_1, y2_1 = region1['bbox']
+    x1_2, y1_2, x2_2, y2_2 = region2['bbox']
     
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-    x1, y1 = min(xs), min(ys)
-    x2, y2 = max(xs), max(ys)
-    
-    x1 = max(0, int(x1) - margin)
-    y1 = max(0, int(y1) - margin)
-    x2 = int(x2) + margin
-    y2 = int(y2) + margin
-    
-    return (x1, y1, x2, y2)
+    # Check if rectangles overlap
+    if x1_1 >= x2_2 or x1_2 >= x2_1:
+        return False
+    if y1_1 >= y2_2 or y1_2 >= y2_1:
+        return False
+    return True
 
 
-def bbox_overlap(bbox1, bbox2):
-    """Calculate overlap area between two bboxes"""
-    x1 = max(bbox1[0], bbox2[0])
-    y1 = max(bbox1[1], bbox2[1])
-    x2 = min(bbox1[2], bbox2[2])
-    y2 = min(bbox1[3], bbox2[3])
-    
-    if x2 < x1 or y2 < y1:
-        return 0
-    
-    return (x2 - x1) * (y2 - y1)
-
-
-def detect_scribbles_sequential(strokes_data, refs, refs_features):
+def find_new_scribble_regions(regions_before, regions_after):
     """
-    SEQUENTIAL DETECTION:  Setiap stroke ditambah → deteksi region → tandai scribble
-    Ini yang Anda minta!
+    Compare regions before and after to find NEW scribbles.
+    Returns list of new regions that appeared.
+    """
+    new_regions = []
+    
+    for region_after in regions_after:
+        # Check if this region existed before
+        is_new = True
+        for region_before in regions_before:
+            if regions_overlap(region_after, region_before):
+                # Region already existed (or overlaps significantly)
+                is_new = False
+                break
+        
+        if is_new:
+            new_regions.append(region_after)
+    
+    return new_regions
+
+
+def point_in_region(point, region):
+    """Check if a point is inside a region"""
+    x, y = point
+    x1, y1, x2, y2 = region['bbox']
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+
+def stroke_intersects_region(points, region):
+    """Check if stroke intersects with region"""
+    # Check if any point of stroke is in region
+    for point in points:
+        if point_in_region(point, region):
+            return True
+    return False
+
+
+def detect_scribbles_sequential(strokes_data, refs):
+    """
+    SEQUENTIAL DETECTION: Detect scribbles dengan menambahkan stroke satu per satu
+    dan scanning canvas setelah setiap penambahan.
     """
     # Init canvas kosong
-    canvas = np.ones(CANVAS_SIZE[: :-1], dtype=np.uint8) * 255
+    canvas = np.ones(CANVAS_SIZE[::-1], dtype=np.uint8) * 255
     
-    # Track stroke bboxes dan overlap
-    stroke_bboxes = []
-    stroke_points = []
+    # Track scribble regions yang sudah terdeteksi
+    detected_regions = []
     
-    # Results
     results = []
-    scribble_regions = []  # Track region yang sudah terdeteksi scribble
     
-    # Process SEQUENTIAL - satu per satu
+    # Process each stroke SEQUENTIALLY
     for idx, row in strokes_data.iterrows():
         pts, _ = parse_stroke(row['description'])
         if len(pts) < 2:
@@ -274,129 +227,60 @@ def detect_scribbles_sequential(strokes_data, refs, refs_features):
                 'uniqId': row['uniqId'],
                 'timestamp': row['timestamp'],
                 'is_scribble': False,
-                'reason': 'Invalid stroke',
-                'similarity_score': 0.0,
-                'matching_refs': 0,
-                'region_density': 0.0,
-                'overlapping_strokes': 0,
-                'entropy': 0.0,
+                'pattern_score': 0.0,
+                'triggered_new_scribble': False,
                 'points': pts
             })
             continue
         
-        # 1. TAMBAHKAN stroke ke canvas
+        # === STEP 1: Scan canvas BEFORE adding stroke ===
+        regions_before = scan_canvas_for_scribbles(
+            canvas, 
+            refs, 
+            CONFIG['scan_grid_size'], 
+            CONFIG['scan_overlap']
+        )
+        
+        # === STEP 2: Add stroke to canvas ===
         pts_int = [(int(x), int(y)) for x, y in pts]
         cv2.polylines(canvas, [np.array(pts_int)], False, 0, STROKE_WIDTH)
         
-        # 2. Get bbox untuk stroke ini
-        current_bbox = get_stroke_bbox(pts, margin=CONFIG['region_margin'])
-        if not current_bbox:
-            results. append({
-                'uniqId': row['uniqId'],
-                'timestamp': row['timestamp'],
-                'is_scribble': False,
-                'reason':  'No bbox',
-                'similarity_score': 0.0,
-                'matching_refs': 0,
-                'region_density': 0.0,
-                'overlapping_strokes': 0,
-                'entropy': 0.0,
-                'points': pts
-            })
-            continue
+        # === STEP 3: Scan canvas AFTER adding stroke ===
+        regions_after = scan_canvas_for_scribbles(
+            canvas, 
+            refs, 
+            CONFIG['scan_grid_size'], 
+            CONFIG['scan_overlap']
+        )
         
-        # 3. CEK overlap dengan stroke sebelumnya
-        overlapping_strokes = 0
-        for prev_bbox in stroke_bboxes: 
-            overlap_area = bbox_overlap(current_bbox, prev_bbox)
-            bbox_area = (current_bbox[2] - current_bbox[0]) * (current_bbox[3] - current_bbox[1])
-            if bbox_area > 0 and overlap_area / bbox_area > CONFIG['overlap_threshold']:
-                overlapping_strokes += 1
+        # === STEP 4: Find NEW scribble regions ===
+        new_regions = find_new_scribble_regions(regions_before, regions_after)
         
-        # 4. Extract REGION dari canvas (cumulative state!)
-        x1, y1, x2, y2 = current_bbox
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(canvas.shape[1], x2)
-        y2 = min(canvas.shape[0], y2)
-        
-        region = canvas[y1:y2, x1:x2]
-        
-        if region.shape[0] < 20 or region.shape[1] < 20:
-            results. append({
-                'uniqId': row['uniqId'],
-                'timestamp': row['timestamp'],
-                'is_scribble': False,
-                'reason':  'Region too small',
-                'similarity_score': 0.0,
-                'matching_refs': 0,
-                'region_density': 0.0,
-                'overlapping_strokes': overlapping_strokes,
-                'entropy': 0.0,
-                'points': pts
-            })
-            stroke_bboxes.append(current_bbox)
-            stroke_points.append(pts)
-            continue
-        
-        # 5.  ANALISIS REGION (bukan stroke individual!)
-        region_area = region.shape[0] * region. shape[1]
-        ink_pixels = np.sum(region < 128)
-        region_density = ink_pixels / region_area
-        
-        # Extract texture features
-        region_features = extract_texture_features(region)
-        
-        # 6. CEK apakah region ini SCRIBBLE
+        # === STEP 5: Check if THIS stroke triggered new scribble ===
         is_scribble = False
-        reason = ""
-        similarity_score = 0.0
-        matching_refs = 0
+        max_score = 0.0
+        triggered_regions = []
         
-        # Condition 1: Cukup overlap dengan stroke sebelumnya? 
-        if overlapping_strokes < CONFIG['min_strokes_in_region']:
-            reason = f"Not enough overlap ({overlapping_strokes} strokes)"
-        # Condition 2: Density cukup tinggi?
-        elif region_density < CONFIG['density_threshold']:
-            reason = f"Low density ({region_density:.3f})"
-        # Condition 3: Entropy cukup tinggi (chaotic)?
-        elif region_features['entropy'] < CONFIG['entropy_threshold']:
-            reason = f"Low entropy ({region_features['entropy']:.2f})"
-        # Condition 4: Edge density cukup tinggi? 
-        elif region_features['edge_density'] < CONFIG['edge_density_threshold']:
-            reason = f"Low edge density ({region_features['edge_density']:.3f})"
-        else:
-            # 7. SIMILARITY CHECK dengan references
-            similarity_score, matching_refs = compute_similarity_score(
-                region, refs, refs_features
-            )
-            
-            if similarity_score > CONFIG['similarity_threshold'] and matching_refs >= CONFIG['min_matching_refs']:
-                is_scribble = True
-                reason = f"SCRIBBLE DETECTED!  (sim={similarity_score:.3f}, refs={matching_refs}, overlaps={overlapping_strokes})"
-                scribble_regions.append(current_bbox)
-            else:
-                reason = f"Pattern not matching (sim={similarity_score:.3f}, refs={matching_refs})"
+        if len(new_regions) > 0:
+            # Check if stroke intersects with any new scribble region
+            for new_region in new_regions:
+                if stroke_intersects_region(pts, new_region):
+                    is_scribble = True
+                    max_score = max(max_score, new_region['score'])
+                    triggered_regions.append(new_region)
         
-        # 8. SAVE result
+        # Update detected regions
+        detected_regions.extend(triggered_regions)
+        
         results.append({
             'uniqId': row['uniqId'],
-            'timestamp':  row['timestamp'],
+            'timestamp': row['timestamp'],
             'is_scribble': is_scribble,
-            'reason':  reason,
-            'similarity_score': similarity_score,
-            'matching_refs': matching_refs,
-            'region_density': region_density,
-            'overlapping_strokes': overlapping_strokes,
-            'entropy': region_features['entropy'],
-            'edge_density': region_features['edge_density'],
-            'points': pts,
-            'bbox': current_bbox
+            'pattern_score': max_score,
+            'triggered_new_scribble': is_scribble,
+            'new_regions_count': len(triggered_regions),
+            'points': pts
         })
-        
-        # 9. UPDATE tracking
-        stroke_bboxes. append(current_bbox)
-        stroke_points.append(pts)
     
     return results, canvas
 
@@ -411,45 +295,40 @@ def render_images(strokes_data, scribble_results):
     img_annotated = Image.new("RGB", CANVAS_SIZE, (255, 255, 255))
     draw_annotated = ImageDraw.Draw(img_annotated)
     
-    for idx, (result, row) in enumerate(zip(scribble_results, strokes_data. itertuples())):
+    for idx, (result, row) in enumerate(zip(scribble_results, strokes_data.itertuples())):
         pts = result['points']
         if len(pts) < 2:
             continue
         
         # Color
         if result['is_scribble']:
-            # Scribble = red with intensity based on similarity
-            confidence = result['similarity_score']
+            # Scribble = red with intensity based on pattern score
+            confidence = result['pattern_score']
             red = int(200 + 55 * min(confidence, 1.0))
             color = (red, 0, 0)
             text_color = (0, 200, 0)  # Green text
         else:
             color = (0, 0, 0)  # Black for writing
-            text_color = (100, 100, 100)  # Gray text
+            text_color = (255, 200, 0)  # Yellow text
         
         # Draw on both
         draw_clean.line(pts, fill=color, width=STROKE_WIDTH)
         draw_annotated.line(pts, fill=color, width=STROKE_WIDTH)
         
-        # Add annotation dengan info tambahan
+        # Add annotation
         if len(pts) > 1:
             mid_idx = len(pts) // 2
             x, y = pts[mid_idx]
-            
-            if result['is_scribble']: 
-                stroke_label = f"{idx+1}⚠"
-            else:
-                stroke_label = f"{idx+1}"
-            
-            text_offset_x = len(stroke_label) * 3
+            stroke_num = str(idx + 1)
+            text_offset_x = len(stroke_num) * 3
             text_offset_y = 5
             
             draw_annotated.text(
                 (x - text_offset_x, y - text_offset_y),
-                stroke_label,
+                stroke_num,
                 fill=text_color,
                 stroke_width=1,
-                stroke_fill=(255, 255, 255)
+                stroke_fill=(0, 0, 0)
             )
     
     return img_clean, img_annotated
@@ -459,18 +338,23 @@ def render_images(strokes_data, scribble_results):
 # MAIN APP
 # =========================
 def main():
-    st.title("✍️ Scribble Detection Dashboard (Sequential)")
-    st.markdown("**Detection Method:** Sequential Region Analysis + Advanced Texture Similarity")
-    st.markdown("🔍 **Setiap stroke ditambah → Region dianalisis → Deteksi scribble pada region**")
+    st.title("✍️ Sequential Scribble Detection Dashboard")
+    st.markdown("**Detection Method:** Incremental Canvas Scanning dengan Pattern Matching")
+    st.markdown("✨ **New:** Deteksi stroke yang menyebabkan munculnya pola scribble baru secara real-time")
     st.markdown("---")
 
+    # ======================================================
     # INPUT SECTION
+    # ======================================================
     st.subheader("📁 Input Data")
     csv_file = st.file_uploader("Upload CSV File", type=["csv"])
 
     st.subheader("🎯 Processing Options")
     
+    # Checkbox untuk limit actors
     limit_actors = st.checkbox("Batasi jumlah actor")
+
+    # Number input muncul langsung setelah checkbox dicentang
     max_actors = None
     if limit_actors:
         max_actors = st.number_input(
@@ -480,31 +364,39 @@ def main():
             value=5
         )
 
-    # Configuration expander
+    # Configuration options
     with st.expander("⚙️ Advanced Configuration"):
-        CONFIG['similarity_threshold'] = st.slider(
-            "Similarity Threshold",
-            0.0, 1.0, CONFIG['similarity_threshold'], 0.05
+        CONFIG['pattern_threshold'] = st.slider(
+            "Pattern Matching Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.55,
+            step=0.05,
+            help="Threshold untuk menganggap pattern sebagai scribble"
         )
-        CONFIG['min_matching_refs'] = st.slider(
-            "Min Matching References",
-            1, 5, CONFIG['min_matching_refs'], 1
+        CONFIG['scan_grid_size'] = st.slider(
+            "Scan Grid Size",
+            min_value=50,
+            max_value=300,
+            value=150,
+            step=10,
+            help="Ukuran window untuk scanning canvas"
         )
-        CONFIG['density_threshold'] = st.slider(
-            "Density Threshold",
-            0.0, 0.5, CONFIG['density_threshold'], 0.01
-        )
-        CONFIG['min_strokes_in_region'] = st.slider(
-            "Min Overlapping Strokes",
-            1, 10, CONFIG['min_strokes_in_region'], 1
-        )
-        CONFIG['entropy_threshold'] = st.slider(
-            "Entropy Threshold (Chaos)",
-            0.0, 8.0, CONFIG['entropy_threshold'], 0.5
+        CONFIG['scan_overlap'] = st.slider(
+            "Scan Overlap",
+            min_value=0,
+            max_value=100,
+            value=50,
+            step=10,
+            help="Overlap antar grid untuk deteksi yang lebih baik"
         )
 
+    # Submit button
     submitted = st.button("🚀 Submit & Process", type="primary")
 
+    # ======================================================
+    # STOP JIKA BELUM SUBMIT
+    # ======================================================
     if not submitted:
         st.info("⬆️ Upload CSV dan klik **Submit & Process** untuk mulai")
         return
@@ -513,7 +405,9 @@ def main():
         st.error("❌ CSV belum di-upload")
         return
 
+    # ======================================================
     # LOAD CSV
+    # ======================================================
     try:
         df = pd.read_csv(csv_file)
         st.success(f"✅ Loaded {len(df)} rows from CSV")
@@ -521,8 +415,10 @@ def main():
         st.error(f"❌ Error loading CSV: {e}")
         return
 
-    # FILTER
-    df_filtered = df[df['operation_name'] == 'ADD_HW_MEMO']. copy()
+    # ======================================================
+    # FILTER ADD_HW_MEMO
+    # ======================================================
+    df_filtered = df[df['operation_name'] == 'ADD_HW_MEMO'].copy()
 
     if df_filtered.empty:
         st.warning("⚠️ Tidak ditemukan ADD_HW_MEMO pada CSV")
@@ -530,34 +426,33 @@ def main():
 
     df_filtered['timestamp'] = pd.to_datetime(df_filtered['timestamp'])
 
+    # ======================================================
     # ACTOR SELECTION
+    # ======================================================
     actors = df_filtered['actor_name_id'].unique()
+
     if limit_actors and max_actors:
         actors = actors[:max_actors]
 
     total_actors = len(actors)
     st.markdown(f"### 👥 Actor diproses: **{total_actors}**")
 
-    # LOAD REFERENCES
+    # ======================================================
+    # LOAD REFERENCE SCRIBBLES
+    # ======================================================
     ref_folder = "scribble_refs"
-    refs, refs_features = load_scribble_refs(ref_folder)
+    refs = load_scribble_refs(ref_folder)
 
-    if refs: 
-        st.success(f"✅ Loaded {len(refs)} reference scribble images dengan texture features")
-        
-        # Show reference samples
-        with st.expander("📸 Reference Scribble Samples"):
-            cols = st.columns(min(len(refs), 5))
-            for i, (ref, col) in enumerate(zip(refs[: 5], cols)):
-                with col:
-                    st.image(ref, caption=f"Ref {i+1}", use_container_width=True)
-                    st.caption(f"Entropy: {refs_features[i]['entropy']:.2f}")
+    if refs:
+        st.success(f"✅ Loaded {len(refs)} reference scribble images")
     else:
         st.error("❌ Tidak ada reference scribble image - Detection tidak bisa berjalan!")
         st.info("💡 Tambahkan reference scribble images di folder 'scribble_refs'")
         return
 
+    # ======================================================
     # PROCESS EACH ACTOR
+    # ======================================================
     actor_data = {}
 
     progress_bar = st.progress(0.0)
@@ -582,8 +477,8 @@ def main():
             .reset_index(drop=True)
         )
 
-        # SEQUENTIAL DETECTION! 
-        results, canvas = detect_scribbles_sequential(actor_df, refs, refs_features)
+        # SEQUENTIAL DETECTION
+        results, canvas = detect_scribbles_sequential(actor_df, refs)
         img_clean, img_annotated = render_images(actor_df, results)
 
         actor_data[actor] = {
@@ -599,7 +494,9 @@ def main():
 
     st.success("✅ Processing selesai")
 
+    # ======================================================
     # GANTT CHART
+    # ======================================================
     st.markdown("---")
     st.header("📊 Gantt Chart - Stroke Timeline")
 
@@ -625,7 +522,7 @@ def main():
 
             if idx_all + 1 < len(actor_all_df):
                 finish_time = actor_all_df.iloc[idx_all + 1]['timestamp']
-            else: 
+            else:
                 finish_time = start_time + timedelta(seconds=1)
 
             gantt_data.append({
@@ -635,16 +532,13 @@ def main():
                 'Finish': finish_time,
                 'Type': 'Scribble' if result['is_scribble'] else 'Writing',
                 'UniqId': row.uniqId,
-                'Similarity': result['similarity_score'],
-                'MatchingRefs': result['matching_refs'],
-                'Density': result['region_density'],
-                'Overlaps': result['overlapping_strokes'],
-                'Entropy': result['entropy'],
-                'Reason': result['reason']
+                'PatternScore': result['pattern_score'],
+                'TriggeredNewScribble': result['triggered_new_scribble']
             })
 
     gantt_df = pd.DataFrame(gantt_data)
 
+    # Create Gantt chart
     fig = px.timeline(
         gantt_df,
         x_start='Start',
@@ -655,8 +549,8 @@ def main():
             'Writing': 'black',
             'Scribble': 'red'
         },
-        hover_data=['Stroke', 'Similarity', 'MatchingRefs', 'Density', 'Overlaps', 'Entropy', 'Reason'],
-        title='Sequential Stroke Detection Timeline'
+        hover_data=['Stroke', 'UniqId', 'PatternScore', 'TriggeredNewScribble'],
+        title='Stroke Activity Timeline by Actor (Sequential Detection)'
     )
     
     fig.update_yaxes(categoryorder='category ascending')
@@ -677,7 +571,9 @@ def main():
 
     st.plotly_chart(fig, use_container_width=True)
 
+    # ======================================================
     # STATISTICS
+    # ======================================================
     st.markdown("---")
     st.header("📈 Statistics")
 
@@ -685,19 +581,21 @@ def main():
     total_scribbles = len(gantt_df[gantt_df['Type'] == 'Scribble'])
     total_writing = len(gantt_df[gantt_df['Type'] == 'Writing'])
     
-    avg_similarity = gantt_df[gantt_df['Type'] == 'Scribble']['Similarity'].mean() if total_scribbles > 0 else 0
-    avg_overlaps = gantt_df[gantt_df['Type'] == 'Scribble']['Overlaps'].mean() if total_scribbles > 0 else 0
-    avg_entropy = gantt_df[gantt_df['Type'] == 'Scribble']['Entropy']. mean() if total_scribbles > 0 else 0
+    avg_pattern_score_scribbles = gantt_df[gantt_df['Type'] == 'Scribble']['PatternScore'].mean() if total_scribbles > 0 else 0
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Strokes", total_strokes)
-    c2.metric("Scribbles", total_scribbles)
+    c2.metric("Scribbles Detected", total_scribbles)
     c3.metric("Writing", total_writing)
-    c4.metric("Avg Similarity", f"{avg_similarity:.3f}")
-    c5.metric("Avg Overlaps", f"{avg_overlaps:.1f}")
-    c6.metric("Avg Entropy", f"{avg_entropy:.2f}")
+    c4.metric("Avg Pattern Score (Scribbles)", f"{avg_pattern_score_scribbles:.3f}")
 
+    if total_strokes > 0:
+        scribble_rate = (total_scribbles / total_strokes) * 100
+        st.markdown(f"**Scribble Rate:** {scribble_rate:.2f}%")
+
+    # ======================================================
     # IMAGES PER ACTOR
+    # ======================================================
     st.markdown("---")
     st.header("🖼️ Generated Images per Actor")
 
@@ -723,7 +621,7 @@ def main():
 
                 st.dataframe(
                     actor_strokes[
-                        ['Stroke', 'Type', 'Similarity', 'MatchingRefs', 'Density', 'Overlaps', 'Entropy', 'Reason']
+                        ['Stroke', 'Type', 'UniqId', 'PatternScore', 'TriggeredNewScribble', 'Start', 'Finish']
                     ],
                     use_container_width=True
                 )
@@ -742,5 +640,5 @@ def main():
                     use_container_width=True
                 )
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     main()

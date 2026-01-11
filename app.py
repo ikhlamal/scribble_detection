@@ -340,160 +340,160 @@ def render_images(strokes_data, scribble_results):
 def main():
     st.title("✍️ Scribble Detection Dashboard")
     st.markdown("---")
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("📁 Upload Data")
-        csv_file = st.file_uploader("Upload CSV File", type=['csv'])
-        
-        st.markdown("---")
-        st.header("⚙️ Settings")
-        
-        # Reference folder
-        ref_folder = st.text_input("Reference Folder Path", value="scribble_refs")
-        
-        st.markdown("---")
-        st.header("🎛️ Detection Config")
-        CONFIG['scribble_score_threshold'] = st.slider(
-            "Scribble Threshold", 
-            0.0, 1.0, 0.55, 0.05
+
+    # ======================================================
+    # INPUT FORM (NO SIDEBAR, PROCESS AFTER SUBMIT)
+    # ======================================================
+    with st.form("input_form"):
+        st.subheader("📁 Input Data")
+
+        csv_file = st.file_uploader(
+            "Upload CSV File",
+            type=["csv"]
         )
-        CONFIG['min_scribble_area'] = st.number_input(
-            "Min Area (px²)", 
-            value=1200, step=100
-        )
-        CONFIG['min_stroke_length'] = st.number_input(
-            "Min Length (px)", 
-            value=80, step=10
-        )
-        
-        st.markdown("---")
-        st.header("🎯 Processing Options")
-        limit_actors = st.checkbox("Limit number of actors", value=False)
+
+        st.subheader("🎯 Processing Options")
+        limit_actors = st.checkbox("Batasi jumlah actor")
+
         max_actors = None
         if limit_actors:
             max_actors = st.number_input(
-                "Max actors to process", 
-                min_value=1, 
-                value=10, 
+                "Jumlah actor yang diproses",
+                min_value=1,
                 step=1,
-                help="Process only first N actors (for testing)"
+                value=5
             )
-    
-    if csv_file is None:
-        st.info("👈 Please upload a CSV file to begin analysis")
+
+        submitted = st.form_submit_button("🚀 Submit & Process")
+
+    # ======================================================
+    # STOP JIKA BELUM SUBMIT
+    # ======================================================
+    if not submitted:
+        st.info("⬆️ Upload CSV dan klik **Submit & Process** untuk mulai")
         return
-    
-    # Load CSV
+
+    if csv_file is None:
+        st.error("❌ CSV belum di-upload")
+        return
+
+    # ======================================================
+    # LOAD CSV
+    # ======================================================
     try:
         df = pd.read_csv(csv_file)
         st.success(f"✅ Loaded {len(df)} rows from CSV")
     except Exception as e:
         st.error(f"❌ Error loading CSV: {e}")
         return
-    
-    # Filter ADD_HW_MEMO
+
+    # ======================================================
+    # FILTER ADD_HW_MEMO
+    # ======================================================
     df_filtered = df[df['operation_name'] == 'ADD_HW_MEMO'].copy()
-    st.info(f"📝 Found {len(df_filtered)} ADD_HW_MEMO operations")
-    
-    if len(df_filtered) == 0:
-        st.warning("No ADD_HW_MEMO operations found in the CSV")
+
+    if df_filtered.empty:
+        st.warning("⚠️ Tidak ditemukan ADD_HW_MEMO pada CSV")
         return
-    
-    # Parse timestamp
+
     df_filtered['timestamp'] = pd.to_datetime(df_filtered['timestamp'])
-    
-    # Load references
+
+    # ======================================================
+    # ACTOR SELECTION
+    # ======================================================
+    actors = df_filtered['actor_name_id'].unique()
+
+    if limit_actors:
+        actors = actors[:max_actors]
+
+    total_actors = len(actors)
+    st.markdown(f"### 👥 Actor diproses: **{total_actors}**")
+
+    # ======================================================
+    # LOAD REFERENCE SCRIBBLES
+    # ======================================================
+    ref_folder = "scribble_refs"
     refs = load_scribble_refs(ref_folder)
-    if len(refs) > 0:
+
+    if refs:
         st.success(f"✅ Loaded {len(refs)} reference scribble images")
     else:
-        st.warning(f"⚠️ No reference images found in '{ref_folder}'")
-    
-    # Group by actor
-    actors = df_filtered['actor_name_id'].unique()
-    st.markdown(f"### 👥 Found {len(actors)} Actor(s)")
-    
-    # Process each actor
+        st.warning("⚠️ Tidak ada reference scribble image")
+
+    # ======================================================
+    # PROCESS EACH ACTOR
+    # ======================================================
     actor_data = {}
-    
-    # Progress tracking
-    total_actors = len(actors)
-    progress_bar = st.progress(0)
+
+    progress_bar = st.progress(0.0)
     status_text = st.empty()
     time_text = st.empty()
-    
+
     import time
     start_time = time.time()
-    
-    for actor_idx, actor in enumerate(actors):
-        # Update progress
-        progress = (actor_idx) / total_actors
-        progress_bar.progress(progress)
-        
-        # Calculate ETA
-        elapsed_time = time.time() - start_time
-        if actor_idx > 0:
-            avg_time_per_actor = elapsed_time / actor_idx
-            remaining_actors = total_actors - actor_idx
-            eta_seconds = avg_time_per_actor * remaining_actors
-            eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
-        else:
-            eta_str = "Calculating..."
-        
-        # Update status
-        status_text.markdown(f"**🔍 Analyzing Actor {actor_idx + 1}/{total_actors}:** `{actor}`")
-        time_text.markdown(f"⏱️ **ETA:** {eta_str} | **Elapsed:** {int(elapsed_time)}s")
-        
-        actor_df = df_filtered[df_filtered['actor_name_id'] == actor].sort_values('timestamp').reset_index(drop=True)
+
+    for idx, actor in enumerate(actors):
+        progress_bar.progress((idx + 1) / total_actors)
+
+        elapsed = time.time() - start_time
+        status_text.markdown(
+            f"🔍 Processing **{actor}** ({idx+1}/{total_actors})"
+        )
+        time_text.markdown(f"⏱️ Elapsed: {int(elapsed)}s")
+
+        actor_df = (
+            df_filtered[df_filtered['actor_name_id'] == actor]
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )
+
         results, canvas = detect_scribbles_for_actor(actor_df, refs)
-        
-        # Render images
         img_clean, img_annotated = render_images(actor_df, results)
-        
+
         actor_data[actor] = {
-            'df': actor_df,
-            'results': results,
-            'img_clean': img_clean,
-            'img_annotated': img_annotated
+            "df": actor_df,
+            "results": results,
+            "img_clean": img_clean,
+            "img_annotated": img_annotated
         }
-    
-    # Complete progress
-    progress_bar.progress(1.0)
-    total_time = time.time() - start_time
-    status_text.markdown(f"**✅ Analysis Complete!** Processed {total_actors} actor(s)")
-    time_text.markdown(f"⏱️ **Total Time:** {int(total_time // 60)}m {int(total_time % 60)}s")
-    
-    # Clear progress after a moment
-    time.sleep(1)
+
     progress_bar.empty()
     status_text.empty()
     time_text.empty()
-    
-    # Create Gantt Chart Data
+
+    st.success("✅ Processing selesai")
+
+    # ======================================================
+    # GANTT CHART
+    # ======================================================
     st.markdown("---")
     st.header("📊 Gantt Chart - Stroke Timeline")
-    
+
     gantt_data = []
-    
+
     for actor in actors:
         data = actor_data[actor]
         actor_df = data['df']
         results = data['results']
-        
-        # Get all timestamps from original df for this actor
-        actor_all_df = df[df['actor_name_id'] == actor].sort_values('timestamp').reset_index(drop=True)
-        
+
+        actor_all_df = (
+            df[df['actor_name_id'] == actor]
+            .sort_values('timestamp')
+            .reset_index(drop=True)
+        )
+
         for i, (result, row) in enumerate(zip(results, actor_df.itertuples())):
             start_time = row.timestamp
-            
-            # Find finish time (next row in original df)
-            current_idx = actor_all_df[actor_all_df['uniqId'] == row.uniqId].index[0]
-            if current_idx + 1 < len(actor_all_df):
-                finish_time = actor_all_df.iloc[current_idx + 1]['timestamp']
+
+            idx_all = actor_all_df[
+                actor_all_df['uniqId'] == row.uniqId
+            ].index[0]
+
+            if idx_all + 1 < len(actor_all_df):
+                finish_time = actor_all_df.iloc[idx_all + 1]['timestamp']
             else:
                 finish_time = start_time + timedelta(seconds=1)
-            
+
             gantt_data.append({
                 'Actor': actor,
                 'Stroke': f"Stroke {i+1}",
@@ -503,72 +503,92 @@ def main():
                 'UniqId': row.uniqId,
                 'Score': result['score']
             })
-    
+
     gantt_df = pd.DataFrame(gantt_data)
-    
-    # Create Gantt Chart
+
     fig = px.timeline(
         gantt_df,
         x_start='Start',
         x_end='Finish',
         y='Actor',
         color='Type',
-        color_discrete_map={'Writing': 'black', 'Scribble': 'red'},
+        color_discrete_map={
+            'Writing': 'black',
+            'Scribble': 'red'
+        },
         hover_data=['Stroke', 'UniqId', 'Score'],
         title='Stroke Activity Timeline by Actor'
     )
-    
+
     fig.update_layout(
-        height=max(400, len(actors) * 100),
+        height=max(400, total_actors * 100),
         xaxis_title="Time",
-        yaxis_title="Actor",
-        showlegend=True
+        yaxis_title="Actor"
     )
-    
+
     st.plotly_chart(fig, use_container_width=True)
-    
-    # Statistics
+
+    # ======================================================
+    # STATISTICS
+    # ======================================================
     st.markdown("---")
     st.header("📈 Statistics")
-    
-    col1, col2, col3 = st.columns(3)
-    
+
     total_strokes = len(gantt_df)
     total_scribbles = len(gantt_df[gantt_df['Type'] == 'Scribble'])
     total_writing = len(gantt_df[gantt_df['Type'] == 'Writing'])
-    
-    col1.metric("Total Strokes", total_strokes)
-    col2.metric("Scribbles", total_scribbles, f"{total_scribbles/total_strokes*100:.1f}%")
-    col3.metric("Writing", total_writing, f"{total_writing/total_strokes*100:.1f}%")
-    
-    # Per Actor Images
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Strokes", total_strokes)
+    c2.metric("Scribbles", total_scribbles)
+    c3.metric("Writing", total_writing)
+
+    # ======================================================
+    # IMAGES PER ACTOR
+    # ======================================================
     st.markdown("---")
     st.header("🖼️ Generated Images per Actor")
-    
+
     for actor in actors:
         with st.expander(f"👤 {actor}", expanded=False):
             data = actor_data[actor]
-            
-            tab1, tab2, tab3 = st.tabs(["📊 Summary", "🖼️ Clean Image", "🏷️ Annotated Image"])
-            
+
+            tab1, tab2, tab3 = st.tabs([
+                "📊 Summary",
+                "🖼️ Clean Image",
+                "🏷️ Annotated Image"
+            ])
+
             with tab1:
                 actor_strokes = gantt_df[gantt_df['Actor'] == actor]
                 scribbles = len(actor_strokes[actor_strokes['Type'] == 'Scribble'])
                 writing = len(actor_strokes[actor_strokes['Type'] == 'Writing'])
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Total Strokes", len(actor_strokes))
-                col2.metric("Scribbles", scribbles)
-                col3.metric("Writing", writing)
-                
-                st.dataframe(actor_strokes[['Stroke', 'Type', 'UniqId', 'Score', 'Start', 'Finish']], use_container_width=True)
-            
-            with tab2:
-                st.image(data['img_clean'], caption=f"Clean Image - {actor}", use_container_width=True)
-            
-            with tab3:
-                st.image(data['img_annotated'], caption=f"Annotated Image - {actor}", use_container_width=True)
 
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Strokes", len(actor_strokes))
+                c2.metric("Scribbles", scribbles)
+                c3.metric("Writing", writing)
+
+                st.dataframe(
+                    actor_strokes[
+                        ['Stroke', 'Type', 'UniqId', 'Score', 'Start', 'Finish']
+                    ],
+                    use_container_width=True
+                )
+
+            with tab2:
+                st.image(
+                    data['img_clean'],
+                    caption=f"Clean Image - {actor}",
+                    use_container_width=True
+                )
+
+            with tab3:
+                st.image(
+                    data['img_annotated'],
+                    caption=f"Annotated Image - {actor}",
+                    use_container_width=True
+                )
 
 if __name__ == "__main__":
     main()

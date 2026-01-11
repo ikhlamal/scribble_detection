@@ -45,7 +45,7 @@ CONFIG = {
     'min_strokes_in_region': 3,          # minimal stroke overlap untuk scribble
     
     # Texture features
-    'entropy_threshold': 4. 5,            # minimal entropy (randomness)
+    'entropy_threshold': 4.5,            # minimal entropy (randomness)
     'edge_density_threshold': 0.12,      # minimal edge density
 }
 

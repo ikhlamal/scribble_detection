@@ -28,10 +28,19 @@ CANVAS_SIZE = (900, 1100)
 STROKE_WIDTH = 3
 
 CONFIG = {
-    # Pattern matching - SATU-SATUNYA FAKTOR
-    'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
-    'min_scribble_area': 2000,            # minimum area stroke (filter noise)
-    'min_stroke_length': 50,             # minimum length stroke (filter noise)
+    # Pattern matching thresholds
+    'pattern_threshold': 0.50,           # threshold untuk pattern similarity
+    'min_scribble_area': 2000,           # minimum area stroke (filter noise)
+    'min_stroke_length': 100,            # minimum length stroke
+    
+    # Complexity requirements (PENTING untuk filter garis sederhana)
+    'min_direction_changes': 8,          # minimal perubahan arah (scribble = banyak belok)
+    'min_density_ratio': 0.05,           # length/area ratio (scribble = padat)
+    'max_linearity': 0.7,                # max linearitas (< 0.7 = tidak lurus)
+    
+    # Multi-reference matching
+    'min_matching_refs': 2,              # minimal harus match dengan 2+ references
+    'high_confidence_threshold': 0.65,   # threshold untuk high confidence match
 }
 
 # =========================
@@ -73,8 +82,83 @@ def load_scribble_refs(folder, size=(150, 150)):
     return refs
 
 
-def get_stroke_bbox_and_metrics(points):
-    """Get bounding box and basic metrics"""
+def analyze_stroke_complexity(points):
+    """Analisis kompleksitas stroke untuk filter garis sederhana"""
+    if len(points) < 3:
+        return {
+            'direction_changes': 0,
+            'density_ratio': 0,
+            'linearity': 1.0,
+            'is_complex': False
+        }
+    
+    # 1. Direction changes (berapa kali arah berubah signifikan)
+    direction_changes = 0
+    prev_angle = None
+    
+    for i in range(1, len(points) - 1):
+        dx = points[i+1][0] - points[i][0]
+        dy = points[i+1][1] - points[i][1]
+        
+        if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+            angle = math.atan2(dy, dx)
+            
+            if prev_angle is not None:
+                angle_diff = abs(angle - prev_angle)
+                # Normalize to [0, pi]
+                if angle_diff > math.pi:
+                    angle_diff = 2 * math.pi - angle_diff
+                
+                # Count significant direction changes (> 30 degrees)
+                if angle_diff > math.pi / 6:
+                    direction_changes += 1
+            
+            prev_angle = angle
+    
+    # 2. Density ratio (panjang stroke dibanding area bbox)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    bbox_w = max(xs) - min(xs) + 1
+    bbox_h = max(ys) - min(ys) + 1
+    bbox_area = bbox_w * bbox_h
+    
+    length = 0
+    for i in range(len(points) - 1):
+        dx = points[i+1][0] - points[i][0]
+        dy = points[i+1][1] - points[i][1]
+        length += math.sqrt(dx*dx + dy*dy)
+    
+    density_ratio = length / (bbox_area + 1e-6)
+    
+    # 3. Linearity check (seberapa lurus garis ini)
+    # Hitung jarak euclidean start-end vs total path length
+    if len(points) >= 2:
+        start = points[0]
+        end = points[-1]
+        euclidean_dist = math.sqrt((end[0]-start[0])**2 + (end[1]-start[1])**2)
+        linearity = euclidean_dist / (length + 1e-6)
+    else:
+        linearity = 1.0
+    
+    # Determine if complex enough to be scribble
+    is_complex = (
+        direction_changes >= CONFIG['min_direction_changes'] and
+        density_ratio >= CONFIG['min_density_ratio'] and
+        linearity < CONFIG['max_linearity']
+    )
+    
+    return {
+        'direction_changes': direction_changes,
+        'density_ratio': density_ratio,
+        'linearity': linearity,
+        'is_complex': is_complex,
+        'bbox_area': bbox_area,
+        'length': length
+    }
+
+
+def get_stroke_bbox(points):
+    """Get bounding box"""
     if len(points) < 2:
         return None
     
@@ -82,32 +166,17 @@ def get_stroke_bbox_and_metrics(points):
     ys = [p[1] for p in points]
     x1, y1 = min(xs), min(ys)
     x2, y2 = max(xs), max(ys)
-    bbox_w = x2 - x1 + 1
-    bbox_h = y2 - y1 + 1
-    bbox_area = bbox_w * bbox_h
     
-    # Calculate length
-    length = 0
-    for i in range(len(points) - 1):
-        dx = points[i+1][0] - points[i][0]
-        dy = points[i+1][1] - points[i][1]
-        length += math.sqrt(dx*dx + dy*dy)
-    
-    return {
-        'bbox': (x1, y1, x2, y2),
-        'bbox_area': bbox_area,
-        'length': length,
-        'points': points
-    }
+    return (x1, y1, x2, y2)
 
 
-def match_with_references(canvas, bbox, refs):
-    """Match region dengan references - HANYA INI yang menentukan scribble"""
+def match_with_references_advanced(canvas, bbox, refs):
+    """Advanced matching dengan multiple references dan multiple methods"""
     if len(refs) == 0:
-        return 0.0
+        return 0.0, 0
     
     x1, y1, x2, y2 = bbox
-    margin = 95
+    margin = 60
     
     x1 = max(0, int(x1) - margin)
     y1 = max(0, int(y1) - margin)
@@ -115,7 +184,7 @@ def match_with_references(canvas, bbox, refs):
     y2 = min(canvas.shape[0], int(y2) + margin)
     
     if x2 - x1 < 20 or y2 - y1 < 20:
-        return 0.0
+        return 0.0, 0
     
     region = canvas[y1:y2, x1:x2]
     
@@ -124,42 +193,78 @@ def match_with_references(canvas, bbox, refs):
     try:
         region_resized = cv2.resize(region, (target_size[1], target_size[0]))
     except:
-        return 0.0
+        return 0.0, 0
     
     # Threshold untuk binary
     _, region_bin = cv2.threshold(region_resized, 127, 255, cv2.THRESH_BINARY)
     
-    max_score = 0.0
+    # Apply edge detection untuk structural matching
+    region_edges = cv2.Canny(region_bin, 50, 150)
+    
+    scores = []
+    high_confidence_matches = 0
+    
     for ref in refs:
-        # SSIM
+        ref_edges = cv2.Canny(ref, 50, 150)
+        
+        # Method 1: SSIM on original
         try:
             score1 = ssim(region_bin, ref, data_range=255)
         except:
             score1 = 0
         
-        # Template matching
+        # Method 2: SSIM on edges (better for structure)
         try:
-            result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCOEFF_NORMED)
-            _, score2, _, _ = cv2.minMaxLoc(result)
+            score2 = ssim(region_edges, ref_edges, data_range=255)
         except:
             score2 = 0
         
-        # Correlation
+        # Method 3: Template matching
         try:
-            result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCORR_NORMED)
+            result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCOEFF_NORMED)
             _, score3, _, _ = cv2.minMaxLoc(result)
         except:
             score3 = 0
         
-        # Combined - ambil yang tertinggi
-        combined = max(score1, score2, score3)
-        max_score = max(max_score, combined)
+        # Method 4: Correlation
+        try:
+            result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCORR_NORMED)
+            _, score4, _, _ = cv2.minMaxLoc(result)
+        except:
+            score4 = 0
+        
+        # Method 5: Histogram comparison
+        try:
+            hist1 = cv2.calcHist([region_bin], [0], None, [256], [0, 256])
+            hist2 = cv2.calcHist([ref], [0], None, [256], [0, 256])
+            score5 = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+        except:
+            score5 = 0
+        
+        # Combined score - weighted average with emphasis on structure
+        combined = (
+            score1 * 0.15 +  # SSIM original
+            score2 * 0.35 +  # SSIM edges (most important for structure)
+            score3 * 0.25 +  # Template matching
+            score4 * 0.15 +  # Correlation
+            score5 * 0.10    # Histogram
+        )
+        
+        scores.append(combined)
+        
+        # Count high confidence matches
+        if combined > CONFIG['high_confidence_threshold']:
+            high_confidence_matches += 1
     
-    return max_score
+    # Return max score and number of matching references
+    max_score = max(scores) if scores else 0.0
+    matching_refs = sum(1 for s in scores if s > CONFIG['pattern_threshold'])
+    
+    return max_score, matching_refs
 
 
 def detect_scribbles_for_actor(strokes_data, refs):
-    """Detect scribbles untuk satu actor - HANYA BERDASARKAN PATTERN MATCHING"""
+    """Detect scribbles dengan validation berlapis"""
     # Init canvas
     canvas = np.ones(CANVAS_SIZE[::-1], dtype=np.uint8) * 255
     
@@ -175,34 +280,60 @@ def detect_scribbles_for_actor(strokes_data, refs):
         pts_int = [(int(x), int(y)) for x, y in pts]
         cv2.polylines(canvas, [np.array(pts_int)], False, 0, STROKE_WIDTH)
         
-        # Get basic metrics
-        metrics = get_stroke_bbox_and_metrics(pts)
-        if metrics is None:
-            continue
+        # Step 1: Analyze complexity (filter garis sederhana)
+        complexity = analyze_stroke_complexity(pts)
         
-        # Filter noise berdasarkan size
-        if metrics['bbox_area'] < CONFIG['min_scribble_area']:
+        # Step 2: Size filters
+        if complexity['bbox_area'] < CONFIG['min_scribble_area']:
             is_scribble = False
             pattern_score = 0.0
-        elif metrics['length'] < CONFIG['min_stroke_length']:
+            matching_refs = 0
+            reason = "Too small"
+        elif complexity['length'] < CONFIG['min_stroke_length']:
             is_scribble = False
             pattern_score = 0.0
+            matching_refs = 0
+            reason = "Too short"
+        elif not complexity['is_complex']:
+            # Garis sederhana = bukan scribble
+            is_scribble = False
+            pattern_score = 0.0
+            matching_refs = 0
+            reason = f"Not complex (dir_changes={complexity['direction_changes']}, linearity={complexity['linearity']:.2f})"
         else:
-            # Pattern matching - INI SATU-SATUNYA YANG MENENTUKAN
-            if len(refs) > 0:
-                pattern_score = match_with_references(canvas, metrics['bbox'], refs)
-                is_scribble = pattern_score > CONFIG['pattern_threshold']
+            # Step 3: Pattern matching (hanya untuk stroke yang kompleks)
+            bbox = get_stroke_bbox(pts)
+            if bbox and len(refs) > 0:
+                pattern_score, matching_refs = match_with_references_advanced(canvas, bbox, refs)
+                
+                # Decision: harus match dengan minimal N references DAN score tinggi
+                is_scribble = (
+                    pattern_score > CONFIG['pattern_threshold'] and
+                    matching_refs >= CONFIG['min_matching_refs']
+                )
+                
+                if is_scribble:
+                    reason = f"Scribble detected (score={pattern_score:.2f}, matches={matching_refs})"
+                else:
+                    reason = f"Pattern not matching (score={pattern_score:.2f}, matches={matching_refs})"
             else:
                 pattern_score = 0.0
+                matching_refs = 0
                 is_scribble = False
+                reason = "No references"
         
         results.append({
             'uniqId': row['uniqId'],
             'timestamp': row['timestamp'],
             'is_scribble': is_scribble,
             'pattern_score': pattern_score,
-            'bbox_area': metrics['bbox_area'],
-            'length': metrics['length'],
+            'matching_refs': matching_refs,
+            'direction_changes': complexity['direction_changes'],
+            'linearity': complexity['linearity'],
+            'density_ratio': complexity['density_ratio'],
+            'bbox_area': complexity['bbox_area'],
+            'length': complexity['length'],
+            'reason': reason,
             'points': pts
         })
     
@@ -263,7 +394,7 @@ def render_images(strokes_data, scribble_results):
 # =========================
 def main():
     st.title("✍️ Scribble Detection Dashboard")
-    st.markdown("**Detection Method:** Pattern Matching dengan Reference Images Only")
+    st.markdown("**Detection Method:** Advanced Pattern Matching + Complexity Analysis")
     st.markdown("---")
 
     # ======================================================
@@ -428,8 +559,10 @@ def main():
                 'Type': 'Scribble' if result['is_scribble'] else 'Writing',
                 'UniqId': row.uniqId,
                 'PatternScore': result['pattern_score'],
-                'Area': result['bbox_area'],
-                'Length': result['length']
+                'MatchingRefs': result['matching_refs'],
+                'DirectionChanges': result['direction_changes'],
+                'Linearity': result['linearity'],
+                'Reason': result['reason']
             })
 
     gantt_df = pd.DataFrame(gantt_data)
@@ -445,7 +578,7 @@ def main():
             'Writing': 'black',
             'Scribble': 'red'
         },
-        hover_data=['Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'],
+        hover_data=['Stroke', 'UniqId', 'PatternScore', 'MatchingRefs', 'DirectionChanges', 'Linearity', 'Reason'],
         title='Stroke Activity Timeline by Actor'
     )
     
@@ -480,12 +613,14 @@ def main():
     total_writing = len(gantt_df[gantt_df['Type'] == 'Writing'])
     
     avg_pattern_score_scribbles = gantt_df[gantt_df['Type'] == 'Scribble']['PatternScore'].mean() if total_scribbles > 0 else 0
+    avg_matching_refs = gantt_df[gantt_df['Type'] == 'Scribble']['MatchingRefs'].mean() if total_scribbles > 0 else 0
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total Strokes", total_strokes)
     c2.metric("Scribbles", total_scribbles)
     c3.metric("Writing", total_writing)
-    c4.metric("Avg Pattern Score (Scribbles)", f"{avg_pattern_score_scribbles:.3f}")
+    c4.metric("Avg Pattern Score", f"{avg_pattern_score_scribbles:.3f}")
+    c5.metric("Avg Matching Refs", f"{avg_matching_refs:.1f}")
 
     # ======================================================
     # IMAGES PER ACTOR
@@ -515,7 +650,7 @@ def main():
 
                 st.dataframe(
                     actor_strokes[
-                        ['Stroke', 'Type', 'UniqId', 'PatternScore', 'Area', 'Length', 'Start', 'Finish']
+                        ['Stroke', 'Type', 'UniqId', 'PatternScore', 'MatchingRefs', 'DirectionChanges', 'Linearity', 'Reason']
                     ],
                     use_container_width=True
                 )

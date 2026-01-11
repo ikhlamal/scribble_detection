@@ -29,7 +29,7 @@ STROKE_WIDTH = 3
 
 CONFIG = {
     # Pattern matching - SATU-SATUNYA FAKTOR
-    'pattern_threshold': 0.45,           # threshold untuk classify sebagai scribble
+    'pattern_threshold': 0.95,           # threshold untuk classify sebagai scribble
     'min_scribble_area': 500,            # minimum area stroke (filter noise)
     'min_stroke_length': 50,             # minimum length stroke (filter noise)
 }

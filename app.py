@@ -560,7 +560,7 @@ def main():
     # PROCESS EACH ACTOR
     actor_data = {}
 
-    progress_bar = st.progress(0. 0)
+    progress_bar = st.progress(0.0)
     status_text = st.empty()
     time_text = st.empty()
 

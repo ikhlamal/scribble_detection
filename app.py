@@ -364,7 +364,6 @@ def main():
             value=5
         )
 
-    # SUBMIT BUTTON (ONLY FOR TRIGGER)
     submitted = st.button("🚀 Submit & Process")
 
     if not submitted:
@@ -376,18 +375,24 @@ def main():
         return
 
     # ======================================================
-    # LOAD CSV
+    # LOAD CSV (FIX TIMESTAMP SEKALI DI SINI)
     # ======================================================
-    df = pd.read_csv(csv_file)
-    st.success(f"✅ Loaded {len(df)} rows")
+    try:
+        df = pd.read_csv(csv_file)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        st.success(f"✅ Loaded {len(df)} rows")
+    except Exception as e:
+        st.error(f"❌ Gagal load CSV: {e}")
+        return
 
+    # ======================================================
+    # FILTER DATA
+    # ======================================================
     df_filtered = df[df['operation_name'] == 'ADD_HW_MEMO'].copy()
 
     if df_filtered.empty:
-        st.warning("Tidak ada ADD_HW_MEMO")
+        st.warning("⚠️ Tidak ada ADD_HW_MEMO")
         return
-
-    df_filtered['timestamp'] = pd.to_datetime(df_filtered['timestamp'])
 
     # ======================================================
     # ACTOR SELECTION
@@ -401,24 +406,31 @@ def main():
     st.markdown(f"### 👥 Actor diproses: **{total_actors}**")
 
     # ======================================================
-    # LOAD REFERENCE
+    # LOAD REFERENCE SCRIBBLES
     # ======================================================
     refs = load_scribble_refs("scribble_refs")
+
+    if refs:
+        st.success(f"✅ Loaded {len(refs)} reference scribble images")
+    else:
+        st.warning("⚠️ Reference scribble tidak ditemukan")
 
     # ======================================================
     # PROCESSING
     # ======================================================
     actor_data = {}
 
-    progress = st.progress(0.0)
-    status = st.empty()
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
 
     import time
-    start = time.time()
+    start_time = time.time()
 
-    for i, actor in enumerate(actors):
-        progress.progress((i + 1) / total_actors)
-        status.markdown(f"🔍 Processing **{actor}** ({i+1}/{total_actors})")
+    for idx, actor in enumerate(actors):
+        progress_bar.progress((idx + 1) / total_actors)
+        status_text.markdown(
+            f"🔍 Processing **{actor}** ({idx+1}/{total_actors})"
+        )
 
         actor_df = (
             df_filtered[df_filtered['actor_name_id'] == actor]
@@ -436,29 +448,30 @@ def main():
             "img_annotated": img_annotated
         }
 
-    progress.empty()
-    status.empty()
+    progress_bar.empty()
+    status_text.empty()
     st.success("✅ Processing selesai")
 
     # ======================================================
-    # CUSTOM GANTT CHART (RAPI & SEJAJAR)
+    # CUSTOM GANTT CHART (SEJAJAR & RAPI)
     # ======================================================
     st.markdown("---")
     st.header("📊 Stroke Timeline (Custom Gantt)")
 
     fig = go.Figure()
 
-    y_positions = {actor: idx * 2 for idx, actor in enumerate(actors)}
+    y_positions = {actor: i * 2 for i, actor in enumerate(actors)}
     offset = 0.35
 
     for actor in actors:
         base_y = y_positions[actor]
+
         actor_df = actor_data[actor]['df']
         results = actor_data[actor]['results']
 
         actor_all_df = (
             df[df['actor_name_id'] == actor]
-            .sort_values('timestamp')
+            .sort_values("timestamp")
             .reset_index(drop=True)
         )
 
@@ -469,23 +482,26 @@ def main():
                 actor_all_df['uniqId'] == row.uniqId
             ].index[0]
 
-            finish = (
-                actor_all_df.iloc[idx_all + 1]['timestamp']
-                if idx_all + 1 < len(actor_all_df)
-                else start + timedelta(seconds=1)
-            )
+            if idx_all + 1 < len(actor_all_df):
+                finish = actor_all_df.iloc[idx_all + 1]['timestamp']
+            else:
+                finish = start + timedelta(seconds=1)
+
+            duration = (finish - start).total_seconds()
 
             y = base_y + (offset if res['is_scribble'] else -offset)
 
             fig.add_trace(go.Bar(
-                x=[(finish - start).total_seconds()],
+                x=[duration],
                 y=[y],
                 base=start,
                 orientation='h',
-                marker_color='red' if res['is_scribble'] else 'black',
+                marker=dict(
+                    color='red' if res['is_scribble'] else 'black'
+                ),
                 showlegend=False,
                 hovertext=(
-                    f"{actor}<br>"
+                    f"Actor: {actor}<br>"
                     f"Stroke {i+1}<br>"
                     f"{'Scribble' if res['is_scribble'] else 'Writing'}<br>"
                     f"Score: {res['score']:.2f}"
@@ -494,7 +510,7 @@ def main():
 
     fig.update_layout(
         height=max(600, total_actors * 160),
-        bargap=0.2,
+        bargap=0.25,
         xaxis_title="Time",
         yaxis=dict(
             tickvals=list(y_positions.values()),

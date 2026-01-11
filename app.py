@@ -505,63 +505,37 @@ def main():
 
     gantt_df = pd.DataFrame(gantt_data)
 
-    # Buat custom Gantt chart dengan layout sejajar
-    fig = go.Figure()
-
-    colors = {'Writing': 'black', 'Scribble': 'red'}
+    # Buat custom Gantt chart dengan layout sejajar menggunakan Plotly timeline
+    fig = px.timeline(
+        gantt_df,
+        x_start='Start',
+        x_end='Finish',
+        y='Actor',
+        color='Type',
+        color_discrete_map={
+            'Writing': 'black',
+            'Scribble': 'red'
+        },
+        hover_data=['Stroke', 'UniqId', 'Score'],
+        title='Stroke Activity Timeline by Actor'
+    )
     
-    for actor in actors:
-        actor_data_subset = gantt_df[gantt_df['Actor'] == actor]
-        
-        for _, row in actor_data_subset.iterrows():
-            # Konversi timestamp ke datetime jika belum
-            start = pd.to_datetime(row['Start'])
-            finish = pd.to_datetime(row['Finish'])
-            duration = (finish - start).total_seconds()
-            
-            fig.add_trace(go.Bar(
-                x=[duration],
-                y=[row['Actor']],
-                base=start,
-                orientation='h',
-                marker=dict(
-                    color=colors[row['Type']],
-                    line=dict(color='white', width=1)
-                ),
-                name=row['Type'],
-                legendgroup=row['Type'],
-                showlegend=False,
-                hovertemplate=(
-                    f"<b>{row['Stroke']}</b><br>" +
-                    f"Type: {row['Type']}<br>" +
-                    f"UniqId: {row['UniqId']}<br>" +
-                    f"Score: {row['Score']:.2f}<br>" +
-                    f"Start: {start}<br>" +
-                    f"Finish: {finish}<br>" +
-                    "<extra></extra>"
-                )
-            ))
-    
-    # Tambahkan legend manual
-    for type_name, color in colors.items():
-        fig.add_trace(go.Bar(
-            x=[None],
-            y=[None],
-            marker=dict(color=color),
-            name=type_name,
-            showlegend=True
-        ))
-
+    # Update layout untuk memperbesar bar dan mengatur spacing
+    fig.update_yaxes(categoryorder='category ascending')
     fig.update_layout(
-        title='Stroke Activity Timeline by Actor',
+        height=max(400, total_actors * 80),
         xaxis_title="Time",
         yaxis_title="Actor",
-        height=max(400, total_actors * 80),
-        barmode='overlay',
-        bargap=0.2,
-        xaxis=dict(type='date'),
-        yaxis=dict(categoryorder='category ascending'),
-        hovermode='closest'
+        hovermode='closest',
+        bargap=0.3,
+        bargroupgap=0.1
+    )
+    
+    # Perbesar ukuran bar
+    fig.update_traces(
+        marker=dict(
+            line=dict(color='white', width=1)
+        )
     )
 
     st.plotly_chart(fig, use_container_width=True)

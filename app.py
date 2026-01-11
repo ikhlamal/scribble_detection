@@ -342,35 +342,33 @@ def main():
     st.markdown("---")
 
     # ======================================================
-    # INPUT FORM (NO SIDEBAR, PROCESS AFTER SUBMIT)
+    # INPUT SECTION (DYNAMIC, NO SIDEBAR)
     # ======================================================
-    with st.form("input_form"):
-        st.subheader("📁 Input Data")
+    st.subheader("📁 Input Data")
 
-        csv_file = st.file_uploader(
-            "Upload CSV File",
-            type=["csv"]
+    csv_file = st.file_uploader(
+        "Upload CSV File",
+        type=["csv"]
+    )
+
+    st.subheader("🎯 Processing Options")
+
+    limit_actors = st.checkbox("Batasi jumlah actor")
+
+    max_actors = None
+    if limit_actors:
+        max_actors = st.number_input(
+            "Jumlah actor yang diproses",
+            min_value=1,
+            step=1,
+            value=5
         )
 
-        st.subheader("🎯 Processing Options")
-        limit_actors = st.checkbox("Batasi jumlah actor")
+    # SUBMIT BUTTON (ONLY FOR TRIGGER)
+    submitted = st.button("🚀 Submit & Process")
 
-        max_actors = None
-        if limit_actors:
-            max_actors = st.number_input(
-                "Jumlah actor yang diproses",
-                min_value=1,
-                step=1,
-                value=5
-            )
-
-        submitted = st.form_submit_button("🚀 Submit & Process")
-
-    # ======================================================
-    # STOP JIKA BELUM SUBMIT
-    # ======================================================
     if not submitted:
-        st.info("⬆️ Upload CSV dan klik **Submit & Process** untuk mulai")
+        st.info("⬆️ Atur parameter lalu klik **Submit & Process**")
         return
 
     if csv_file is None:
@@ -380,20 +378,13 @@ def main():
     # ======================================================
     # LOAD CSV
     # ======================================================
-    try:
-        df = pd.read_csv(csv_file)
-        st.success(f"✅ Loaded {len(df)} rows from CSV")
-    except Exception as e:
-        st.error(f"❌ Error loading CSV: {e}")
-        return
+    df = pd.read_csv(csv_file)
+    st.success(f"✅ Loaded {len(df)} rows")
 
-    # ======================================================
-    # FILTER ADD_HW_MEMO
-    # ======================================================
     df_filtered = df[df['operation_name'] == 'ADD_HW_MEMO'].copy()
 
     if df_filtered.empty:
-        st.warning("⚠️ Tidak ditemukan ADD_HW_MEMO pada CSV")
+        st.warning("Tidak ada ADD_HW_MEMO")
         return
 
     df_filtered['timestamp'] = pd.to_datetime(df_filtered['timestamp'])
@@ -410,36 +401,24 @@ def main():
     st.markdown(f"### 👥 Actor diproses: **{total_actors}**")
 
     # ======================================================
-    # LOAD REFERENCE SCRIBBLES
+    # LOAD REFERENCE
     # ======================================================
-    ref_folder = "scribble_refs"
-    refs = load_scribble_refs(ref_folder)
-
-    if refs:
-        st.success(f"✅ Loaded {len(refs)} reference scribble images")
-    else:
-        st.warning("⚠️ Tidak ada reference scribble image")
+    refs = load_scribble_refs("scribble_refs")
 
     # ======================================================
-    # PROCESS EACH ACTOR
+    # PROCESSING
     # ======================================================
     actor_data = {}
 
-    progress_bar = st.progress(0.0)
-    status_text = st.empty()
-    time_text = st.empty()
+    progress = st.progress(0.0)
+    status = st.empty()
 
     import time
-    start_time = time.time()
+    start = time.time()
 
-    for idx, actor in enumerate(actors):
-        progress_bar.progress((idx + 1) / total_actors)
-
-        elapsed = time.time() - start_time
-        status_text.markdown(
-            f"🔍 Processing **{actor}** ({idx+1}/{total_actors})"
-        )
-        time_text.markdown(f"⏱️ Elapsed: {int(elapsed)}s")
+    for i, actor in enumerate(actors):
+        progress.progress((i + 1) / total_actors)
+        status.markdown(f"🔍 Processing **{actor}** ({i+1}/{total_actors})")
 
         actor_df = (
             df_filtered[df_filtered['actor_name_id'] == actor]
@@ -447,7 +426,7 @@ def main():
             .reset_index(drop=True)
         )
 
-        results, canvas = detect_scribbles_for_actor(actor_df, refs)
+        results, _ = detect_scribbles_for_actor(actor_df, refs)
         img_clean, img_annotated = render_images(actor_df, results)
 
         actor_data[actor] = {
@@ -457,24 +436,25 @@ def main():
             "img_annotated": img_annotated
         }
 
-    progress_bar.empty()
-    status_text.empty()
-    time_text.empty()
-
+    progress.empty()
+    status.empty()
     st.success("✅ Processing selesai")
 
     # ======================================================
-    # GANTT CHART
+    # CUSTOM GANTT CHART (RAPI & SEJAJAR)
     # ======================================================
     st.markdown("---")
-    st.header("📊 Gantt Chart - Stroke Timeline")
+    st.header("📊 Stroke Timeline (Custom Gantt)")
 
-    gantt_data = []
+    fig = go.Figure()
+
+    y_positions = {actor: idx * 2 for idx, actor in enumerate(actors)}
+    offset = 0.35
 
     for actor in actors:
-        data = actor_data[actor]
-        actor_df = data['df']
-        results = data['results']
+        base_y = y_positions[actor]
+        actor_df = actor_data[actor]['df']
+        results = actor_data[actor]['results']
 
         actor_all_df = (
             df[df['actor_name_id'] == actor]
@@ -482,51 +462,51 @@ def main():
             .reset_index(drop=True)
         )
 
-        for i, (result, row) in enumerate(zip(results, actor_df.itertuples())):
-            start_time = row.timestamp
+        for i, (res, row) in enumerate(zip(results, actor_df.itertuples())):
+            start = row.timestamp
 
             idx_all = actor_all_df[
                 actor_all_df['uniqId'] == row.uniqId
             ].index[0]
 
-            if idx_all + 1 < len(actor_all_df):
-                finish_time = actor_all_df.iloc[idx_all + 1]['timestamp']
-            else:
-                finish_time = start_time + timedelta(seconds=1)
+            finish = (
+                actor_all_df.iloc[idx_all + 1]['timestamp']
+                if idx_all + 1 < len(actor_all_df)
+                else start + timedelta(seconds=1)
+            )
 
-            gantt_data.append({
-                'Actor': actor,
-                'Stroke': f"Stroke {i+1}",
-                'Start': start_time,
-                'Finish': finish_time,
-                'Type': 'Scribble' if result['is_scribble'] else 'Writing',
-                'UniqId': row.uniqId,
-                'Score': result['score']
-            })
+            y = base_y + (offset if res['is_scribble'] else -offset)
 
-    gantt_df = pd.DataFrame(gantt_data)
-
-    fig = px.timeline(
-        gantt_df,
-        x_start='Start',
-        x_end='Finish',
-        y='Actor',
-        color='Type',
-        color_discrete_map={
-            'Writing': 'black',
-            'Scribble': 'red'
-        },
-        hover_data=['Stroke', 'UniqId', 'Score'],
-        title='Stroke Activity Timeline by Actor'
-    )
+            fig.add_trace(go.Bar(
+                x=[(finish - start).total_seconds()],
+                y=[y],
+                base=start,
+                orientation='h',
+                marker_color='red' if res['is_scribble'] else 'black',
+                showlegend=False,
+                hovertext=(
+                    f"{actor}<br>"
+                    f"Stroke {i+1}<br>"
+                    f"{'Scribble' if res['is_scribble'] else 'Writing'}<br>"
+                    f"Score: {res['score']:.2f}"
+                )
+            ))
 
     fig.update_layout(
-        height=max(400, total_actors * 100),
+        height=max(600, total_actors * 160),
+        bargap=0.2,
         xaxis_title="Time",
-        yaxis_title="Actor"
+        yaxis=dict(
+            tickvals=list(y_positions.values()),
+            ticktext=list(y_positions.keys()),
+            title="Actor"
+        ),
+        title="Stroke Timeline per Actor (Writing vs Scribble)",
+        template="simple_white"
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
 
     # ======================================================
     # STATISTICS

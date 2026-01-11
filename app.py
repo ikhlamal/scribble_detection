@@ -342,17 +342,12 @@ def main():
     st.markdown("---")
 
     # ======================================================
-    # INPUT SECTION (DYNAMIC, NO SIDEBAR)
+    # INPUT SECTION (NO SIDEBAR, DYNAMIC)
     # ======================================================
     st.subheader("📁 Input Data")
-
-    csv_file = st.file_uploader(
-        "Upload CSV File",
-        type=["csv"]
-    )
+    csv_file = st.file_uploader("Upload CSV File", type=["csv"])
 
     st.subheader("🎯 Processing Options")
-
     limit_actors = st.checkbox("Batasi jumlah actor")
 
     max_actors = None
@@ -375,7 +370,7 @@ def main():
         return
 
     # ======================================================
-    # LOAD CSV (FIX TIMESTAMP SEKALI DI SINI)
+    # LOAD CSV
     # ======================================================
     try:
         df = pd.read_csv(csv_file)
@@ -389,7 +384,6 @@ def main():
     # FILTER DATA
     # ======================================================
     df_filtered = df[df['operation_name'] == 'ADD_HW_MEMO'].copy()
-
     if df_filtered.empty:
         st.warning("⚠️ Tidak ada ADD_HW_MEMO")
         return
@@ -398,7 +392,6 @@ def main():
     # ACTOR SELECTION
     # ======================================================
     actors = df_filtered['actor_name_id'].unique()
-
     if limit_actors:
         actors = actors[:max_actors]
 
@@ -410,27 +403,18 @@ def main():
     # ======================================================
     refs = load_scribble_refs("scribble_refs")
 
-    if refs:
-        st.success(f"✅ Loaded {len(refs)} reference scribble images")
-    else:
-        st.warning("⚠️ Reference scribble tidak ditemukan")
-
     # ======================================================
     # PROCESSING
     # ======================================================
     actor_data = {}
+    gantt_rows = []
 
-    progress_bar = st.progress(0.0)
-    status_text = st.empty()
-
-    import time
-    start_time = time.time()
+    progress = st.progress(0.0)
+    status = st.empty()
 
     for idx, actor in enumerate(actors):
-        progress_bar.progress((idx + 1) / total_actors)
-        status_text.markdown(
-            f"🔍 Processing **{actor}** ({idx+1}/{total_actors})"
-        )
+        progress.progress((idx + 1) / total_actors)
+        status.markdown(f"🔍 Processing **{actor}** ({idx+1}/{total_actors})")
 
         actor_df = (
             df_filtered[df_filtered['actor_name_id'] == actor]
@@ -441,34 +425,6 @@ def main():
         results, _ = detect_scribbles_for_actor(actor_df, refs)
         img_clean, img_annotated = render_images(actor_df, results)
 
-        actor_data[actor] = {
-            "df": actor_df,
-            "results": results,
-            "img_clean": img_clean,
-            "img_annotated": img_annotated
-        }
-
-    progress_bar.empty()
-    status_text.empty()
-    st.success("✅ Processing selesai")
-
-    # ======================================================
-    # CUSTOM GANTT CHART (SEJAJAR & RAPI)
-    # ======================================================
-    st.markdown("---")
-    st.header("📊 Stroke Timeline (Custom Gantt)")
-
-    fig = go.Figure()
-
-    y_positions = {actor: i * 2 for i, actor in enumerate(actors)}
-    offset = 0.35
-
-    for actor in actors:
-        base_y = y_positions[actor]
-
-        actor_df = actor_data[actor]['df']
-        results = actor_data[actor]['results']
-
         actor_all_df = (
             df[df['actor_name_id'] == actor]
             .sort_values("timestamp")
@@ -477,7 +433,6 @@ def main():
 
         for i, (res, row) in enumerate(zip(results, actor_df.itertuples())):
             start = row.timestamp
-
             idx_all = actor_all_df[
                 actor_all_df['uniqId'] == row.uniqId
             ].index[0]
@@ -487,42 +442,76 @@ def main():
             else:
                 finish = start + timedelta(seconds=1)
 
-            duration = (finish - start).total_seconds()
+            gantt_rows.append({
+                "Actor": actor,
+                "Stroke": f"Stroke {i+1}",
+                "Start": start,
+                "Finish": finish,
+                "Type": "Scribble" if res['is_scribble'] else "Writing",
+                "Score": res['score'],
+                "UniqId": row.uniqId
+            })
 
-            y = base_y + (offset if res['is_scribble'] else -offset)
+        actor_data[actor] = {
+            "df": actor_df,
+            "results": results,
+            "img_clean": img_clean,
+            "img_annotated": img_annotated
+        }
 
-            fig.add_trace(go.Bar(
-                x=[duration],
-                y=[y],
-                base=start,
-                orientation='h',
-                marker=dict(
-                    color='red' if res['is_scribble'] else 'black'
-                ),
-                showlegend=False,
-                hovertext=(
-                    f"Actor: {actor}<br>"
-                    f"Stroke {i+1}<br>"
-                    f"{'Scribble' if res['is_scribble'] else 'Writing'}<br>"
-                    f"Score: {res['score']:.2f}"
-                )
-            ))
+    progress.empty()
+    status.empty()
+    st.success("✅ Processing selesai")
+
+    # ======================================================
+    # BUILD GANTT DATAFRAME
+    # ======================================================
+    gantt_df = pd.DataFrame(gantt_rows)
+
+    # ======================================================
+    # CUSTOM GANTT CHART (SEJAJAR & TEBAL)
+    # ======================================================
+    st.markdown("---")
+    st.header("📊 Stroke Timeline")
+
+    fig = go.Figure()
+    y_pos = {actor: i for i, actor in enumerate(actors)}
+
+    for _, row in gantt_df.iterrows():
+        duration = (row["Finish"] - row["Start"]).total_seconds()
+
+        fig.add_trace(go.Bar(
+            x=[duration],
+            y=[y_pos[row["Actor"]]],
+            base=row["Start"],
+            orientation="h",
+            width=0.6,
+            marker=dict(
+                color="red" if row["Type"] == "Scribble" else "black"
+            ),
+            hovertext=(
+                f"Actor: {row['Actor']}<br>"
+                f"{row['Stroke']}<br>"
+                f"{row['Type']}<br>"
+                f"Score: {row['Score']:.2f}"
+            ),
+            showlegend=False
+        ))
 
     fig.update_layout(
-        height=max(600, total_actors * 160),
-        bargap=0.25,
+        height=max(600, total_actors * 140),
         xaxis_title="Time",
         yaxis=dict(
-            tickvals=list(y_positions.values()),
-            ticktext=list(y_positions.keys()),
+            tickvals=list(y_pos.values()),
+            ticktext=list(y_pos.keys()),
             title="Actor"
         ),
-        title="Stroke Timeline per Actor (Writing vs Scribble)",
+        bargap=0.15,
+        title="Stroke Timeline per Actor",
         template="simple_white"
     )
 
     st.plotly_chart(fig, use_container_width=True)
-
 
     # ======================================================
     # STATISTICS
@@ -531,8 +520,8 @@ def main():
     st.header("📈 Statistics")
 
     total_strokes = len(gantt_df)
-    total_scribbles = len(gantt_df[gantt_df['Type'] == 'Scribble'])
-    total_writing = len(gantt_df[gantt_df['Type'] == 'Writing'])
+    total_scribbles = len(gantt_df[gantt_df["Type"] == "Scribble"])
+    total_writing = len(gantt_df[gantt_df["Type"] == "Writing"])
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Strokes", total_strokes)
@@ -556,35 +545,15 @@ def main():
             ])
 
             with tab1:
-                actor_strokes = gantt_df[gantt_df['Actor'] == actor]
-                scribbles = len(actor_strokes[actor_strokes['Type'] == 'Scribble'])
-                writing = len(actor_strokes[actor_strokes['Type'] == 'Writing'])
-
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Total Strokes", len(actor_strokes))
-                c2.metric("Scribbles", scribbles)
-                c3.metric("Writing", writing)
-
-                st.dataframe(
-                    actor_strokes[
-                        ['Stroke', 'Type', 'UniqId', 'Score', 'Start', 'Finish']
-                    ],
-                    use_container_width=True
-                )
+                actor_df = gantt_df[gantt_df["Actor"] == actor]
+                st.dataframe(actor_df, use_container_width=True)
 
             with tab2:
-                st.image(
-                    data['img_clean'],
-                    caption=f"Clean Image - {actor}",
-                    use_container_width=True
-                )
+                st.image(data["img_clean"], use_container_width=True)
 
             with tab3:
-                st.image(
-                    data['img_annotated'],
-                    caption=f"Annotated Image - {actor}",
-                    use_container_width=True
-                )
+                st.image(data["img_annotated"], use_container_width=True)
+
 
 if __name__ == "__main__":
     main()

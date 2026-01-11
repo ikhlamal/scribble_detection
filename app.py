@@ -243,7 +243,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     # Process each stroke INCREMENTALLY
     for idx, row in strokes_data.iterrows():
         pts, _ = parse_stroke(row['description'])
-        if len(pts) < 2:
+        if len(pts) < 4:
             results.append({
                 'uniqId': row['uniqId'],
                 'timestamp': row['timestamp'],

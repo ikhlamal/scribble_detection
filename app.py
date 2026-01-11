@@ -32,7 +32,8 @@ CONFIG = {
     'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
     'min_scribble_area': 2000,           # minimum area stroke (filter noise)
     'min_stroke_length': 50,             # minimum length stroke (filter noise)
-    'continuity_window': 3,              # window size untuk post-processing isolated scribbles
+    'continuity_window': 3,              # window size untuk post-processing (gap maksimal)
+    'min_consecutive': 4,                # minimum consecutive scribbles (group size)
 }
 
 # =========================
@@ -167,26 +168,27 @@ def is_stroke_complex(points, bbox_area, length):
     num_points = len(points)
     
     # Kriteria kompleksitas
-    is_long = length > 600  # stroke panjang
+    is_long = length > 300  # stroke panjang
     is_large_area = bbox_area > 8000  # area besar
-    is_many_points = num_points > 200  # banyak titik
+    is_many_points = num_points > 20  # banyak titik
     
     # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points
 
 
-def post_process_isolated_scribbles(results, window_size=3):
+def post_process_isolated_scribbles(results, window_size=3, min_consecutive=4):
     """
-    POST-PROCESSING: Filter scribbles yang isolated (tidak beruntun).
+    POST-PROCESSING: Filter scribbles yang isolated atau terlalu pendek.
     
     Logic:
-    - Scribble yang isolated (tidak ada scribble lain dalam window_size stroke) 
-      akan di-filter KECUALI stroke tersebut kompleks.
-    - Scribble yang beruntun (ada scribble lain dalam window) = valid scribble
+    - Scribble harus beruntun minimal min_consecutive stroke
+    - Jika scribble beruntun < min_consecutive = BUKAN scribble (false positive)
+    - KECUALI stroke tersebut kompleks (panjang/besar)
     
     Args:
         results: list of detection results
         window_size: jarak maksimal untuk dianggap "beruntun"
+        min_consecutive: minimum jumlah scribble beruntun
     """
     if len(results) == 0:
         return results
@@ -197,31 +199,47 @@ def post_process_isolated_scribbles(results, window_size=3):
     # Find all scribble indices
     scribble_indices = [i for i, r in enumerate(results) if r['is_scribble']]
     
-    # Check each scribble
-    for idx in scribble_indices:
-        result = results[idx]
+    if len(scribble_indices) == 0:
+        return processed
+    
+    # Group scribbles into consecutive sequences
+    def find_consecutive_groups(indices, max_gap):
+        """Group indices yang beruntun dengan gap maksimal"""
+        if not indices:
+            return []
         
-        # Check if complex stroke (exception)
-        if is_stroke_complex(result['points'], result['bbox_area'], result['length']):
-            # Stroke kompleks, tetap scribble meski isolated
-            continue
+        groups = []
+        current_group = [indices[0]]
         
-        # Check if has nearby scribbles (within window)
-        has_nearby_scribble = False
+        for i in range(1, len(indices)):
+            if indices[i] - indices[i-1] <= max_gap:
+                current_group.append(indices[i])
+            else:
+                groups.append(current_group)
+                current_group = [indices[i]]
         
-        for other_idx in scribble_indices:
-            if other_idx == idx:
-                continue
-            
-            distance = abs(other_idx - idx)
-            if distance <= window_size:
-                has_nearby_scribble = True
-                break
-        
-        # If isolated and not complex -> NOT scribble (false positive)
-        if not has_nearby_scribble:
-            processed[idx]['is_scribble'] = False
-            processed[idx]['was_filtered'] = True  # mark for debugging
+        groups.append(current_group)
+        return groups
+    
+    # Find consecutive groups
+    groups = find_consecutive_groups(scribble_indices, window_size)
+    
+    # Filter groups that are too small
+    for group in groups:
+        if len(group) < min_consecutive:
+            # Group terlalu kecil, cek apakah ada yang kompleks
+            for idx in group:
+                result = results[idx]
+                
+                # Check if complex stroke (exception)
+                if is_stroke_complex(result['points'], result['bbox_area'], result['length']):
+                    # Stroke kompleks, tetap scribble
+                    continue
+                else:
+                    # Not complex and group too small -> filter
+                    processed[idx]['is_scribble'] = False
+                    processed[idx]['was_filtered'] = True
+                    processed[idx]['filter_reason'] = f'group_too_small_{len(group)}'
     
     return processed
 
@@ -243,7 +261,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     # Process each stroke INCREMENTALLY
     for idx, row in strokes_data.iterrows():
         pts, _ = parse_stroke(row['description'])
-        if len(pts) < 4:
+        if len(pts) < 2:
             results.append({
                 'uniqId': row['uniqId'],
                 'timestamp': row['timestamp'],
@@ -297,8 +315,12 @@ def detect_scribbles_incremental(strokes_data, refs):
             'was_filtered': False
         })
     
-    # === STEP 3: POST-PROCESSING - Filter isolated scribbles ===
-    results = post_process_isolated_scribbles(results, window_size=CONFIG.get('continuity_window', 3))
+    # === STEP 3: POST-PROCESSING - Filter isolated/short scribble sequences ===
+    results = post_process_isolated_scribbles(
+        results, 
+        window_size=CONFIG.get('continuity_window', 3),
+        min_consecutive=CONFIG.get('min_consecutive', 4)
+    )
     
     return results, canvas
 
@@ -359,7 +381,7 @@ def main():
     st.title("✍️ Incremental Scribble Detection Dashboard")
     st.markdown("**Detection Method:** Pattern Matching (Original) + Incremental Canvas Update")
     st.markdown("🔄 **Incremental:** Deteksi stroke yang memicu munculnya scribble")
-    st.markdown("🧹 **Post-Processing:** Filter isolated scribbles (false positives)")
+    st.markdown("🧹 **Post-Processing:** Filter scribble groups yang terlalu pendek (< min consecutive)")
     st.markdown("---")
 
     # ======================================================
@@ -417,12 +439,20 @@ def main():
                 help="Minimum length stroke untuk filter noise"
             )
             CONFIG['continuity_window'] = st.slider(
-                "Continuity Window",
+                "Continuity Window (Gap)",
                 min_value=1,
                 max_value=10,
                 value=3,
                 step=1,
-                help="Window untuk filter isolated scribbles (stroke harus beruntun dalam N stroke)"
+                help="Gap maksimal antar stroke untuk dianggap beruntun"
+            )
+            CONFIG['min_consecutive'] = st.slider(
+                "Min Consecutive Scribbles",
+                min_value=2,
+                max_value=10,
+                value=4,
+                step=1,
+                help="Minimum jumlah scribble beruntun (< ini = false positive, kecuali kompleks)"
             )
 
     # Submit button

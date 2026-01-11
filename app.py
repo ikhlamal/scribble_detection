@@ -28,21 +28,32 @@ CANVAS_SIZE = (900, 1100)
 STROKE_WIDTH = 3
 
 CONFIG = {
-    'repetitive_area_threshold': 4,
-    'dense_crossing_threshold': 5,  # Lebih ketat
-    'min_scribble_area': 2000,  # Area lebih besar
-    'min_stroke_length': 150,  # Length lebih panjang
-    'sharp_turn_angle': 90,  # Angle lebih ketat
-    'min_sharp_turns': 6,  # Lebih banyak sharp turns
-    'density_in_bbox': 0.12,  # Density lebih tinggi
+    # Karakteristik scribble: area besar dengan stroke yang sangat panjang dan melingkar
+    'min_scribble_area': 3000,  # Area lebih besar - scribble biasanya menutupi area luas
+    'min_stroke_length': 200,   # Stroke lebih panjang - scribble terus menerus
+    
+    # Karakteristik geometri scribble
+    'sharp_turn_angle': 80,     # Angle lebih ketat untuk deteksi belokan tajam
+    'min_sharp_turns': 8,       # Lebih banyak belokan - scribble penuh zigzag
+    
+    # Density dan crossing - scribble sangat padat dan saling tumpang tindih
+    'density_in_bbox': 0.15,    # Density lebih tinggi - scribble sangat rapat
+    'dense_crossing_threshold': 8,  # Banyak crossing - scribble overlap berkali-kali
+    
+    # Pattern matching
     'use_pattern_matching': True,
-    'pattern_threshold': 0.50,  # Lebih ketat
-    'pattern_weight': 0.35,
+    'pattern_threshold': 0.50,
+    'pattern_weight': 0.40,
+    
+    # Heatmap untuk deteksi overlap
     'use_heatmap': True,
-    'heatmap_intensity_threshold': 40,  # Lebih ketat
-    'scribble_score_threshold': 0.65,  # Threshold lebih tinggi
-    'aspect_ratio_min': 0.3,  # Reject jika terlalu memanjang (angka biasa)
-    'aspect_ratio_max': 3.0,  # Reject jika terlalu memanjang
+    'heatmap_intensity_threshold': 50,  # Threshold lebih tinggi
+    
+    # Circularity - scribble cenderung melingkar/zigzag bolak balik
+    'min_circularity': 0.3,  # Rasio antara area convex hull dengan bbox
+    
+    # Final threshold
+    'scribble_score_threshold': 0.65,  # Threshold lebih tinggi - lebih strict
 }
 
 # =========================
@@ -131,17 +142,15 @@ def analyze_stroke_simple(points):
     bbox_h = y2 - y1 + 1
     bbox_area = bbox_w * bbox_h
     
-    # Aspect ratio check - angka normal biasanya memanjang atau melebar
-    aspect_ratio = bbox_w / (bbox_h + 1e-6)
-    
+    # Hitung panjang stroke
     length = 0
     for i in range(len(points) - 1):
         dx = points[i+1][0] - points[i][0]
         dy = points[i+1][1] - points[i][1]
         length += math.sqrt(dx*dx + dy*dy)
     
+    # Hitung sharp turns (belokan tajam)
     sharp_turns = 0
-    turn_angles = []
     for i in range(1, len(points) - 1):
         v1 = np.array([points[i][0] - points[i-1][0], points[i][1] - points[i-1][1]])
         v2 = np.array([points[i+1][0] - points[i][0], points[i+1][1] - points[i][1]])
@@ -153,44 +162,60 @@ def analyze_stroke_simple(points):
             cos_angle = np.dot(v1, v2) / (norm1 * norm2)
             cos_angle = np.clip(cos_angle, -1, 1)
             angle = np.degrees(np.arccos(cos_angle))
-            turn_angles.append(angle)
             
             if angle > CONFIG['sharp_turn_angle']:
                 sharp_turns += 1
     
-    # Hitung variasi arah untuk deteksi chaotic movement
-    direction_changes = 0
-    if len(points) > 5:
-        for i in range(2, len(points) - 2):
-            dx1 = points[i][0] - points[i-1][0]
-            dy1 = points[i][1] - points[i-1][1]
-            dx2 = points[i+1][0] - points[i][0]
-            dy2 = points[i+1][1] - points[i][1]
-            
-            # Check if direction changed significantly
-            if abs(dx1) > 1 and abs(dx2) > 1:
-                if (dx1 * dx2) < 0:  # X direction changed
-                    direction_changes += 1
-            if abs(dy1) > 1 and abs(dy2) > 1:
-                if (dy1 * dy2) < 0:  # Y direction changed
-                    direction_changes += 1
-    
+    # Density - rasio panjang stroke terhadap bbox area
     density = length / (bbox_area + 1e-6)
     
-    # Self-intersection check (lebih ketat)
+    # Crossings - deteksi self-intersection (scribble sering overlap dengan dirinya sendiri)
     crossings = 0
-    if len(points) > 15:
-        step = max(1, len(points) // 25)
-        for i in range(0, len(points) - step * 3, step):
+    if len(points) > 10:
+        step = max(1, len(points) // 30)
+        for i in range(0, len(points) - step, step):
             p1 = points[i]
             for j in range(i + step * 3, len(points) - step, step):
                 p2 = points[j]
                 dist = math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
-                if dist < 12:  # Lebih ketat
+                if dist < 15:
                     crossings += 1
     
-    # Compactness score - scribble cenderung compact
-    compactness = (4 * math.pi * bbox_area) / (length * length + 1e-6) if length > 0 else 0
+    # Circularity - hitung rasio antara area actual vs bbox
+    # Scribble cenderung mengisi area lebih merata (circularity tinggi)
+    try:
+        from scipy.spatial import ConvexHull
+        if len(points) >= 4:
+            hull = ConvexHull(points)
+            convex_area = hull.volume  # Dalam 2D, volume = area
+            circularity = convex_area / (bbox_area + 1e-6)
+        else:
+            circularity = 0
+    except:
+        circularity = 0
+    
+    # Direction changes - hitung berapa kali arah berubah drastis
+    direction_changes = 0
+    if len(points) > 5:
+        for i in range(2, len(points) - 2):
+            # Bandingkan arah sebelum dan sesudah
+            v_before = np.array([points[i][0] - points[i-2][0], points[i][1] - points[i-2][1]])
+            v_after = np.array([points[i+2][0] - points[i][0], points[i+2][1] - points[i][1]])
+            
+            norm_before = np.linalg.norm(v_before)
+            norm_after = np.linalg.norm(v_after)
+            
+            if norm_before > 1e-6 and norm_after > 1e-6:
+                cos_angle = np.dot(v_before, v_after) / (norm_before * norm_after)
+                cos_angle = np.clip(cos_angle, -1, 1)
+                angle = np.degrees(np.arccos(cos_angle))
+                
+                # Jika arah berubah > 120 derajat (hampir balik arah)
+                if angle > 120:
+                    direction_changes += 1
+    
+    # Aspect ratio - scribble biasanya tidak terlalu memanjang
+    aspect_ratio = max(bbox_w, bbox_h) / (min(bbox_w, bbox_h) + 1e-6)
     
     return {
         'bbox': (x1, y1, x2, y2),
@@ -200,10 +225,9 @@ def analyze_stroke_simple(points):
         'sharp_turns': sharp_turns,
         'crossings': crossings,
         'points': points,
-        'aspect_ratio': aspect_ratio,
+        'circularity': circularity,
         'direction_changes': direction_changes,
-        'compactness': compactness,
-        'avg_turn_angle': np.mean(turn_angles) if turn_angles else 0
+        'aspect_ratio': aspect_ratio
     }
 
 
@@ -248,60 +272,71 @@ def match_with_references(canvas, bbox, refs):
 
 
 def calculate_scribble_score(geom, heatmap_intensity, pattern_score):
-    """Calculate scribble score dengan logic lebih robust"""
-    # Basic requirements
+    """Calculate scribble score dengan pendekatan yang lebih robust"""
+    
+    # Filter dasar - harus memenuhi kriteria minimum
     if geom['bbox_area'] < CONFIG['min_scribble_area']:
         return 0.0
     if geom['length'] < CONFIG['min_stroke_length']:
         return 0.0
     
-    # Aspect ratio check - tolak jika terlalu memanjang seperti angka normal
-    aspect_ratio = geom['aspect_ratio']
-    if aspect_ratio < CONFIG['aspect_ratio_min'] or aspect_ratio > CONFIG['aspect_ratio_max']:
-        return 0.0
-    
     score = 0.0
     
-    # Pattern matching (tertinggi priority untuk scribble detection)
+    # 1. Pattern matching dengan reference scribbles (bobot tinggi)
     if CONFIG['use_pattern_matching'] and pattern_score > CONFIG['pattern_threshold']:
         score += CONFIG['pattern_weight']
-        if pattern_score > 0.65:
+        if pattern_score > 0.65:  # Sangat mirip dengan scribble reference
             score += 0.15
-        if pattern_score > 0.75:
-            score += 0.10
     
-    # Sharp turns - scribble punya banyak belokan tajam
+    # 2. Sharp turns - scribble punya banyak belokan tajam
     if geom['sharp_turns'] >= CONFIG['min_sharp_turns']:
-        score += 0.25
-        # Bonus jika SANGAT banyak sharp turns
-        if geom['sharp_turns'] >= CONFIG['min_sharp_turns'] + 3:
+        score += 0.20
+        # Bonus jika sangat banyak sharp turns
+        if geom['sharp_turns'] >= CONFIG['min_sharp_turns'] * 1.5:
             score += 0.10
     
-    # Direction changes - scribble chaotic
-    if geom['direction_changes'] > 8:
-        score += 0.15
-    
-    # Density - scribble area kecil tapi panjang stroke besar
+    # 3. Density - scribble sangat padat
     if geom['density'] > CONFIG['density_in_bbox']:
         score += 0.15
     
-    # Self-crossing - scribble sering overlap
+    # 4. Crossings - scribble banyak self-intersection
     if geom['crossings'] >= CONFIG['dense_crossing_threshold']:
         score += 0.20
-        if geom['crossings'] >= CONFIG['dense_crossing_threshold'] + 3:
-            score += 0.10
+        # Bonus jika sangat banyak crossing
+        if geom['crossings'] >= CONFIG['dense_crossing_threshold'] * 2:
+            score += 0.15
     
-    # Heatmap intensity - area yang sering di-overlap
+    # 5. Heatmap intensity - overlap area tinggi
     if CONFIG['use_heatmap'] and heatmap_intensity > CONFIG['heatmap_intensity_threshold']:
         score += 0.15
     
-    # Compactness - scribble cenderung compact (tidak memanjang)
-    if geom['compactness'] < 0.3:  # Semakin kecil semakin chaotic
+    # 6. Direction changes - scribble sering balik arah
+    if 'direction_changes' in geom and geom['direction_changes'] >= 5:
+        score += 0.15
+    
+    # 7. Circularity - scribble mengisi area lebih merata
+    if 'circularity' in geom and geom['circularity'] > CONFIG['min_circularity']:
         score += 0.10
     
-    # Average turn angle - scribble punya rata-rata belokan yang besar
-    if geom['avg_turn_angle'] > 60:
-        score += 0.10
+    # PENALTY: Jika aspect ratio terlalu ekstrem (garis panjang/pendek)
+    # Tulisan normal/coretan biasa cenderung memanjang, scribble lebih balanced
+    if 'aspect_ratio' in geom and geom['aspect_ratio'] > 8:
+        score *= 0.5  # Kurangi score drastis
+    
+    # BONUS: Kombinasi fatal - jika memenuhi banyak kriteria sekaligus
+    critical_conditions = 0
+    if geom['sharp_turns'] >= CONFIG['min_sharp_turns']:
+        critical_conditions += 1
+    if geom['crossings'] >= CONFIG['dense_crossing_threshold']:
+        critical_conditions += 1
+    if geom['density'] > CONFIG['density_in_bbox']:
+        critical_conditions += 1
+    if 'direction_changes' in geom and geom['direction_changes'] >= 5:
+        critical_conditions += 1
+    
+    # Jika memenuhi 3 atau lebih kriteria sekaligus, kemungkinan besar scribble
+    if critical_conditions >= 3:
+        score += 0.15
     
     return min(score, 1.0)
 

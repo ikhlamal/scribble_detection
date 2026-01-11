@@ -28,8 +28,8 @@ CANVAS_SIZE = (900, 1100)
 STROKE_WIDTH = 3
 
 CONFIG = {
-    'repetitive_area_threshold': 4,
-    'dense_crossing_threshold': 3,
+    'repetitive_area_threshold': 400,
+    'dense_crossing_threshold': 300,
     'min_scribble_area': 1200,
     'min_stroke_length': 80,
     'sharp_turn_angle': 100,

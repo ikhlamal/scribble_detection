@@ -402,7 +402,7 @@ def main():
     # ======================================================
     actors = df_filtered['actor_name_id'].unique()
 
-    if limit_actors:
+    if limit_actors and max_actors:
         actors = actors[:max_actors]
 
     total_actors = len(actors)
@@ -514,10 +514,15 @@ def main():
         actor_data_subset = gantt_df[gantt_df['Actor'] == actor]
         
         for _, row in actor_data_subset.iterrows():
+            # Konversi timestamp ke datetime jika belum
+            start = pd.to_datetime(row['Start'])
+            finish = pd.to_datetime(row['Finish'])
+            duration = (finish - start).total_seconds()
+            
             fig.add_trace(go.Bar(
-                x=[(row['Finish'] - row['Start']).total_seconds()],
+                x=[duration],
                 y=[row['Actor']],
-                base=row['Start'],
+                base=start,
                 orientation='h',
                 marker=dict(
                     color=colors[row['Type']],
@@ -531,8 +536,8 @@ def main():
                     f"Type: {row['Type']}<br>" +
                     f"UniqId: {row['UniqId']}<br>" +
                     f"Score: {row['Score']:.2f}<br>" +
-                    f"Start: {row['Start']}<br>" +
-                    f"Finish: {row['Finish']}<br>" +
+                    f"Start: {start}<br>" +
+                    f"Finish: {finish}<br>" +
                     "<extra></extra>"
                 )
             ))

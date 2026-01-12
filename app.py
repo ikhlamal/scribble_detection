@@ -169,13 +169,13 @@ def is_stroke_complex(points, bbox_area, length):
     # Kriteria kompleksitas
     is_long = length > 600 # stroke panjang
     is_large_area = bbox_area > 800000  # area besar
-    is_many_points = num_points > 800  # banyak titik
+    is_many_points = num_points > 200  # banyak titik
     
     # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points
 
 
-def post_process_isolated_scribbles(results, min_consecutive=4):
+def post_process_isolated_scribbles(results, min_consecutive=2):
     """
     POST-PROCESSING: Filter scribbles yang tidak strictly consecutive.
     
@@ -408,7 +408,6 @@ def main():
             step=1,
             value=5
         )
-
     # Submit button
     submitted = st.button("🚀 Submit & Process", type="primary")
 
@@ -498,6 +497,7 @@ def main():
 
         actor_df = (
             df_filtered[df_filtered['actor_name_id'] == actor]
+            .sort_values("timestamp")
             .reset_index(drop=True)
         )
 
@@ -522,7 +522,7 @@ def main():
     # GANTT CHART - GROUPED BY DATE
     # ======================================================
     st.markdown("---")
-    st.header("📊 Gantt Chart - Stroke Timeline")
+    st.header("📊 Gantt Chart - Stroke Timeline (Grouped by Date)")
 
     gantt_data = []
 
@@ -559,7 +559,7 @@ def main():
     gantt_df = pd.DataFrame(gantt_data)
 
     # Group by unique dates
-    unique_dates = sorted(gantt_df['Date'].unique())
+    unique_dates = gantt_df['Date'].unique()
     
     st.info(f"📅 Total unique dates found: **{len(unique_dates)}**")
 
@@ -618,7 +618,7 @@ def main():
             margin=dict(l=150, r=50, t=80, b=80),  # Tambah margin kiri untuk label actor
             plot_bgcolor='rgba(240, 240, 240, 0.3)'  # Background abu-abu muda untuk kontras dengan gridlines
         )
-        
+
         st.plotly_chart(fig, use_container_width=True)
         
         # Add separator between dates (except for last one)

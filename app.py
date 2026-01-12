@@ -175,7 +175,7 @@ def is_stroke_complex(points, bbox_area, length):
     return is_long or is_large_area or is_many_points
 
 
-def post_process_isolated_scribbles(results, min_consecutive=4):
+def post_process_isolated_scribbles(results, min_consecutive=2):
     """
     POST-PROCESSING: Filter scribbles yang tidak strictly consecutive.
     
@@ -593,6 +593,7 @@ def main():
                 'Stroke': f"Stroke {i+1}",
                 'Start': start_time,
                 'Finish': finish_time,
+                'Duration': (finish_time - start_time).total_seconds(),
                 'Type': 'Scribble' if result['is_scribble'] else 'Writing',
                 'UniqId': row.uniqId,
                 'PatternScore': result['pattern_score'],
@@ -602,38 +603,127 @@ def main():
 
     gantt_df = pd.DataFrame(gantt_data)
 
-    # Create Gantt chart
-    fig = px.timeline(
-        gantt_df,
-        x_start='Start',
-        x_end='Finish',
-        y='Actor',
-        color='Type',
-        color_discrete_map={
-            'Writing': 'black',
-            'Scribble': 'red'
-        },
-        hover_data=['Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'],
-        title='Stroke Activity Timeline by Actor (Incremental Detection)'
-    )
+    # Create custom Gantt chart using go.Figure for better flexibility
+    fig = go.Figure()
     
-    fig.update_yaxes(categoryorder='category ascending')
+    # Color mapping
+    color_map = {
+        'Scribble': 'rgb(239, 85, 59)',  # Red
+        'Writing': 'rgb(99, 110, 114)'    # Dark gray/black
+    }
+    
+    # Get unique actors and assign y-positions
+    unique_actors = gantt_df['Actor'].unique()
+    actor_to_y = {actor: i for i, actor in enumerate(unique_actors)}
+    
+    # Add traces for each type
+    for stroke_type in ['Writing', 'Scribble']:
+        df_type = gantt_df[gantt_df['Type'] == stroke_type]
+        
+        if len(df_type) == 0:
+            continue
+        
+        # Create hover text
+        hover_texts = []
+        for _, row in df_type.iterrows():
+            hover_text = (
+                f"<b>{row['Stroke']}</b><br>"
+                f"Actor: {row['Actor']}<br>"
+                f"Type: {row['Type']}<br>"
+                f"Start: {row['Start'].strftime('%Y-%m-%d %H:%M:%S')}<br>"
+                f"Duration: {row['Duration']:.2f}s<br>"
+                f"Pattern Score: {row['PatternScore']:.3f}<br>"
+                f"Area: {row['Area']:.0f}<br>"
+                f"Length: {row['Length']:.1f}"
+            )
+            hover_texts.append(hover_text)
+        
+        fig.add_trace(go.Bar(
+            name=stroke_type,
+            x=df_type['Duration'],
+            y=[actor_to_y[actor] for actor in df_type['Actor']],
+            base=df_type['Start'],
+            orientation='h',
+            marker=dict(
+                color=color_map[stroke_type],
+                line=dict(color='white', width=0.5)
+            ),
+            hovertext=hover_texts,
+            hoverinfo='text',
+            showlegend=True
+        ))
+    
+    # Update layout for better visualization
     fig.update_layout(
-        height=max(400, total_actors * 80),
-        xaxis_title="Time",
-        yaxis_title="Actor",
+        title={
+            'text': 'Stroke Activity Timeline by Actor',
+            'x': 0.5,
+            'xanchor': 'center'
+        },
+        xaxis=dict(
+            title='Time',
+            type='date',
+            tickformat='%Y-%m-%d %H:%M:%S',
+            showgrid=True,
+            gridcolor='lightgray',
+            gridwidth=0.5
+        ),
+        yaxis=dict(
+            title='Actor',
+            tickmode='array',
+            tickvals=list(range(len(unique_actors))),
+            ticktext=list(unique_actors),
+            showgrid=True,
+            gridcolor='lightgray',
+            gridwidth=0.5
+        ),
+        barmode='overlay',
+        height=max(400, len(unique_actors) * 50 + 100),
         hovermode='closest',
-        bargap=0.3,
-        bargroupgap=0.1
+        plot_bgcolor='white',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        margin=dict(l=150, r=50, t=100, b=80),
+        # Enable zoom and pan
+        dragmode='pan',
+        xaxis_rangeslider_visible=False
     )
     
-    fig.update_traces(
-        marker=dict(
-            line=dict(color='white', width=1)
-        )
+    # Update axes appearance
+    fig.update_xaxes(
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        mirror=True
     )
-
-    st.plotly_chart(fig, use_container_width=True)
+    
+    fig.update_yaxes(
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        mirror=True
+    )
+    
+    # Display with config for better interaction
+    st.plotly_chart(
+        fig, 
+        use_container_width=True,
+        config={
+            'displayModeBar': True,
+            'displaylogo': False,
+            'modeBarButtonsToAdd': ['pan2d', 'zoom2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
+            'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
+            'scrollZoom': True
+        }
+    )
+    
+    # Add instruction
+    st.info("💡 **Tip:** Gunakan scroll untuk zoom, drag untuk pan, atau gunakan toolbar di kanan atas untuk kontrol lebih detail")
 
     # ======================================================
     # STATISTICS

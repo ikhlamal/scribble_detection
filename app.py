@@ -644,7 +644,15 @@ def main():
         
         fig.update_yaxes(
             categoryorder='category ascending',
-            title='Actor'
+            title='Actor',
+            showgrid=True,  # Tampilkan grid horizontal
+            gridcolor='rgba(128, 128, 128, 0.3)',  # Warna grid abu-abu
+            gridwidth=1
+        )
+        fig.update_xaxes(
+            showgrid=True,  # Tampilkan grid vertical
+            gridcolor='rgba(128, 128, 128, 0.3)',  # Warna grid abu-abu
+            gridwidth=1
         )
         fig.update_layout(
             height=max(400, date_actors * 80),  # Lebih tinggi per actor
@@ -653,7 +661,8 @@ def main():
             hovermode='closest',
             bargap=0.2,  # Dikurangi dari 0.3 agar bar lebih lebar
             bargroupgap=0.05,  # Dikurangi dari 0.1
-            margin=dict(l=150, r=50, t=80, b=80)  # Tambah margin kiri untuk label actor
+            margin=dict(l=150, r=50, t=80, b=80),  # Tambah margin kiri untuk label actor
+            plot_bgcolor='rgba(240, 240, 240, 0.3)'  # Background abu-abu muda untuk kontras dengan gridlines
         )
         
         fig.update_traces(

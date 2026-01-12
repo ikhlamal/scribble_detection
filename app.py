@@ -32,7 +32,7 @@ CONFIG = {
     'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
     'min_scribble_area': 2000,           # minimum area stroke (filter noise)
     'min_stroke_length': 50,             # minimum length stroke (filter noise)
-    'min_consecutive': 4,                # minimum strictly consecutive scribbles
+    'min_consecutive': 2,                # minimum strictly consecutive scribbles
 }
 
 # =========================

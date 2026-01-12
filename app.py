@@ -572,9 +572,10 @@ def main():
 
         actor_all_df = (
             df[df['actor_name_id'] == actor]
-            .sort_values('timestamp')
-            .reset_index(drop=True)
+            .copy()
         )
+        actor_all_df['timestamp'] = pd.to_datetime(actor_all_df['timestamp'])
+        actor_all_df = actor_all_df.sort_values('timestamp').reset_index(drop=True)
 
         for i, (result, row) in enumerate(zip(results, actor_df.itertuples())):
             start_time = row.timestamp

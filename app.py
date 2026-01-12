@@ -408,6 +408,7 @@ def main():
             step=1,
             value=5
         )
+    
     # Submit button
     submitted = st.button("🚀 Submit & Process", type="primary")
 
@@ -531,16 +532,34 @@ def main():
         actor_df = data['df']
         results = data['results']
 
+        # Ambil SEMUA operasi actor untuk melihat jeda/idle
+        actor_all_df = (
+            df[df['actor_name_id'] == actor]
+            .copy()
+        )
+        actor_all_df['timestamp'] = pd.to_datetime(actor_all_df['timestamp'])
+        actor_all_df = actor_all_df.sort_values('timestamp').reset_index(drop=True)
+
         for i, (result, row) in enumerate(zip(results, actor_df.itertuples())):
             start_time = row.timestamp
 
-            # Cek apakah ini stroke terakhir dalam actor_df (ADD_HW_MEMO saja)
-            if i + 1 < len(actor_df):
-                # Bukan stroke terakhir: pakai timestamp stroke berikutnya
-                finish_time = actor_df.iloc[i + 1]['timestamp']
-            else:
-                # Stroke terakhir: finish = start + 1 detik
+            # Cari index di actor_all_df (semua operasi)
+            idx_all = actor_all_df[
+                actor_all_df['uniqId'] == row.uniqId
+            ].index[0]
+
+            # Cek apakah ini stroke terakhir ADD_HW_MEMO
+            is_last_stroke = (i + 1 >= len(actor_df))
+            
+            if is_last_stroke:
+                # Stroke terakhir ADD_HW_MEMO: finish = start + 1 detik
                 finish_time = start_time + timedelta(seconds=1)
+            else:
+                # Bukan stroke terakhir: pakai timestamp operasi berikutnya (untuk melihat jeda)
+                if idx_all + 1 < len(actor_all_df):
+                    finish_time = actor_all_df.iloc[idx_all + 1]['timestamp']
+                else:
+                    finish_time = start_time + timedelta(seconds=1)
 
             gantt_data.append({
                 'Actor': actor,
@@ -558,8 +577,8 @@ def main():
 
     gantt_df = pd.DataFrame(gantt_data)
 
-    # Group by unique dates
-    unique_dates = gantt_df['Date'].unique()
+    # Group by unique dates (SORTED)
+    unique_dates = sorted(gantt_df['Date'].unique())
     
     st.info(f"📅 Total unique dates found: **{len(unique_dates)}**")
 
@@ -581,6 +600,13 @@ def main():
         col3.metric("Writing", date_writing)
         col4.metric("Actors", date_actors)
         
+        # PENTING: Urutkan berdasarkan urutan kemunculan pertama (preserve order dari data)
+        # Buat mapping actor ke order kemunculan pertama
+        actor_first_appearance = date_df.groupby('ActorDisplay')['Start'].min().sort_values()
+        actor_order = {actor: idx for idx, actor in enumerate(actor_first_appearance.index)}
+        date_df['ActorOrder'] = date_df['ActorDisplay'].map(actor_order)
+        date_df = date_df.sort_values(['ActorOrder', 'Start'])
+        
         # Create Gantt chart for this date
         fig = px.timeline(
             date_df,
@@ -597,7 +623,7 @@ def main():
         )
         
         fig.update_yaxes(
-            categoryorder='category ascending',
+            categoryorder='total ascending',  # Urutkan berdasarkan urutan kemunculan dalam data
             title='Actor',
             showgrid=True,  # Tampilkan grid horizontal
             gridcolor='rgba(128, 128, 128, 0.3)',  # Warna grid abu-abu
@@ -617,6 +643,13 @@ def main():
             bargroupgap=0.05,  # Dikurangi dari 0.1
             margin=dict(l=150, r=50, t=80, b=80),  # Tambah margin kiri untuk label actor
             plot_bgcolor='rgba(240, 240, 240, 0.3)'  # Background abu-abu muda untuk kontras dengan gridlines
+        )
+        
+        # Tambahkan border pada bar
+        fig.update_traces(
+            marker=dict(
+                line=dict(color='rgba(0, 0, 0, 0.8)', width=2)  # Border hitam
+            )
         )
 
         st.plotly_chart(fig, use_container_width=True)

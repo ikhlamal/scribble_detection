@@ -593,7 +593,6 @@ def main():
                 'Stroke': f"Stroke {i+1}",
                 'Start': start_time,
                 'Finish': finish_time,
-                'Duration': (finish_time - start_time).total_seconds(),
                 'Type': 'Scribble' if result['is_scribble'] else 'Writing',
                 'UniqId': row.uniqId,
                 'PatternScore': result['pattern_score'],
@@ -623,35 +622,42 @@ def main():
         if len(df_type) == 0:
             continue
         
-        # Create hover text
+        # Create hover text and bar positions
         hover_texts = []
+        x_starts = []
+        x_ends = []
+        y_positions = []
+        
         for _, row in df_type.iterrows():
             hover_text = (
                 f"<b>{row['Stroke']}</b><br>"
                 f"Actor: {row['Actor']}<br>"
                 f"Type: {row['Type']}<br>"
                 f"Start: {row['Start'].strftime('%Y-%m-%d %H:%M:%S')}<br>"
-                f"Duration: {row['Duration']:.2f}s<br>"
+                f"End: {row['Finish'].strftime('%Y-%m-%d %H:%M:%S')}<br>"
                 f"Pattern Score: {row['PatternScore']:.3f}<br>"
                 f"Area: {row['Area']:.0f}<br>"
                 f"Length: {row['Length']:.1f}"
             )
             hover_texts.append(hover_text)
+            x_starts.append(row['Start'])
+            x_ends.append(row['Finish'])
+            y_positions.append(actor_to_y[row['Actor']])
         
-        fig.add_trace(go.Bar(
-            name=stroke_type,
-            x=df_type['Duration'],
-            y=[actor_to_y[actor] for actor in df_type['Actor']],
-            base=df_type['Start'],
-            orientation='h',
-            marker=dict(
-                color=color_map[stroke_type],
-                line=dict(color='white', width=0.5)
-            ),
-            hovertext=hover_texts,
-            hoverinfo='text',
-            showlegend=True
-        ))
+        # Add bars as shapes
+        for i in range(len(x_starts)):
+            fig.add_trace(go.Scatter(
+                x=[x_starts[i], x_ends[i], x_ends[i], x_starts[i], x_starts[i]],
+                y=[y_positions[i] - 0.4, y_positions[i] - 0.4, y_positions[i] + 0.4, y_positions[i] + 0.4, y_positions[i] - 0.4],
+                fill='toself',
+                fillcolor=color_map[stroke_type],
+                line=dict(color='white', width=1),
+                hovertext=hover_texts[i],
+                hoverinfo='text',
+                showlegend=(i == 0),  # Only show legend for first item of each type
+                name=stroke_type,
+                legendgroup=stroke_type
+            ))
     
     # Update layout for better visualization
     fig.update_layout(
@@ -675,10 +681,10 @@ def main():
             ticktext=list(unique_actors),
             showgrid=True,
             gridcolor='lightgray',
-            gridwidth=0.5
+            gridwidth=0.5,
+            range=[-0.5, len(unique_actors) - 0.5]
         ),
-        barmode='overlay',
-        height=max(400, len(unique_actors) * 50 + 100),
+        height=max(400, len(unique_actors) * 60 + 100),
         hovermode='closest',
         plot_bgcolor='white',
         legend=dict(
@@ -689,9 +695,7 @@ def main():
             x=1
         ),
         margin=dict(l=150, r=50, t=100, b=80),
-        # Enable zoom and pan
-        dragmode='pan',
-        xaxis_rangeslider_visible=False
+        dragmode='pan'
     )
     
     # Update axes appearance

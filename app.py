@@ -32,7 +32,7 @@ CONFIG = {
     'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
     'min_scribble_area': 2000,           # minimum area stroke (filter noise)
     'min_stroke_length': 50,             # minimum length stroke (filter noise)
-    'min_consecutive': 2,                # minimum strictly consecutive scribbles
+    'min_consecutive': 4,                # minimum strictly consecutive scribbles
 }
 
 # =========================
@@ -167,15 +167,15 @@ def is_stroke_complex(points, bbox_area, length):
     num_points = len(points)
     
     # Kriteria kompleksitas
-    is_long = length > 600 # stroke panjang
-    is_large_area = bbox_area > 800000  # area besar
-    is_many_points = num_points > 200  # banyak titik
+    is_long = length > 300  # stroke panjang
+    is_large_area = bbox_area > 8000  # area besar
+    is_many_points = num_points > 20  # banyak titik
     
     # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points
 
 
-def post_process_isolated_scribbles(results, min_consecutive=2):
+def post_process_isolated_scribbles(results, min_consecutive=4):
     """
     POST-PROCESSING: Filter scribbles yang tidak strictly consecutive.
     
@@ -319,7 +319,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     # === STEP 3: POST-PROCESSING - Filter non-strictly-consecutive scribbles ===
     results = post_process_isolated_scribbles(
         results, 
-        min_consecutive=CONFIG.get('min_consecutive', 2)
+        min_consecutive=CONFIG.get('min_consecutive', 4)
     )
     
     return results, canvas
@@ -629,21 +629,25 @@ def main():
         y_positions = []
         
         for _, row in df_type.iterrows():
-            duration = (row['Finish'] - row['Start']).total_seconds()
+            # Ensure timestamps are pandas Timestamp objects
+            start_time = pd.Timestamp(row['Start'])
+            finish_time = pd.Timestamp(row['Finish'])
+            duration = (finish_time - start_time).total_seconds()
+            
             hover_text = (
                 f"<b>{row['Stroke']}</b><br>"
                 f"Actor: {row['Actor']}<br>"
                 f"Type: {row['Type']}<br>"
-                f"Start: {row['Start'].strftime('%Y-%m-%d %H:%M:%S')}<br>"
-                f"End: {row['Finish'].strftime('%Y-%m-%d %H:%M:%S')}<br>"
+                f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}<br>"
+                f"End: {finish_time.strftime('%Y-%m-%d %H:%M:%S')}<br>"
                 f"Duration: {duration:.2f}s<br>"
                 f"Pattern Score: {row['PatternScore']:.3f}<br>"
                 f"Area: {row['Area']:.0f}<br>"
                 f"Length: {row['Length']:.1f}"
             )
             hover_texts.append(hover_text)
-            x_starts.append(row['Start'])
-            x_ends.append(row['Finish'])
+            x_starts.append(start_time)
+            x_ends.append(finish_time)
             y_positions.append(actor_to_y[row['Actor']])
         
         # Add bars as shapes

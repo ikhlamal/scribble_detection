@@ -168,15 +168,15 @@ def is_stroke_complex(points, bbox_area, length):
     num_points = len(points)
     
     # Kriteria kompleksitas
-    is_long = length > 30000  # stroke panjang
-    is_large_area = bbox_area > 800000  # area besar
-    is_many_points = num_points > 2000  # banyak titik
+    is_long = length > 300  # stroke panjang
+    is_large_area = bbox_area > 8000  # area besar
+    is_many_points = num_points > 20  # banyak titik
     
     # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points
 
 
-def post_process_isolated_scribbles(results, window_size=3, min_consecutive=4):
+def post_process_isolated_scribbles(results, window_size=1, min_consecutive=4):
     """
     POST-PROCESSING: Filter scribbles yang isolated atau terlalu pendek.
     

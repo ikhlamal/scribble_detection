@@ -570,24 +570,13 @@ def main():
         actor_df = data['df']
         results = data['results']
 
-        actor_all_df = (
-            df[df['actor_name_id'] == actor]
-            .copy()
-        )
-        actor_all_df['timestamp'] = pd.to_datetime(actor_all_df['timestamp'])
-        actor_all_df = actor_all_df.sort_values('timestamp').reset_index(drop=True)
-
         for i, (result, row) in enumerate(zip(results, actor_df.itertuples())):
             start_time = row.timestamp
 
-            idx_all = actor_all_df[
-                actor_all_df['uniqId'] == row.uniqId
-            ].index[0]
-
-            # Cek apakah ini stroke terakhir
-            if idx_all + 1 < len(actor_all_df):
+            # Cek apakah ini stroke terakhir dalam actor_df (ADD_HW_MEMO saja)
+            if i + 1 < len(actor_df):
                 # Bukan stroke terakhir: pakai timestamp stroke berikutnya
-                finish_time = actor_all_df.iloc[idx_all + 1]['timestamp']
+                finish_time = actor_df.iloc[i + 1]['timestamp']
             else:
                 # Stroke terakhir: finish = start + 1 detik
                 finish_time = start_time + timedelta(seconds=1)

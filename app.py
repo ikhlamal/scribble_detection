@@ -665,12 +665,6 @@ def main():
             plot_bgcolor='rgba(240, 240, 240, 0.3)'  # Background abu-abu muda untuk kontras dengan gridlines
         )
         
-        fig.update_traces(
-            marker=dict(
-                line=dict(color='rgba(0, 0, 0, 0.8)', width=2)  # Border hitam lebih tebal dan lebih jelas
-            )
-        )
-
         st.plotly_chart(fig, use_container_width=True)
         
         # Add separator between dates (except for last one)

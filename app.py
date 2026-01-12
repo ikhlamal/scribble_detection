@@ -168,9 +168,9 @@ def is_stroke_complex(points, bbox_area, length):
     num_points = len(points)
     
     # Kriteria kompleksitas
-    is_long = length > 300  # stroke panjang
-    is_large_area = bbox_area > 8000  # area besar
-    is_many_points = num_points > 20  # banyak titik
+    is_long = length > 300000000  # stroke panjang
+    is_large_area = bbox_area > 8000000000000  # area besar
+    is_many_points = num_points > 200000000000000000000  # banyak titik
     
     # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points

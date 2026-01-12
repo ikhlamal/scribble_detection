@@ -169,7 +169,7 @@ def is_stroke_complex(points, bbox_area, length):
     # Kriteria kompleksitas
     is_long = length > 600 # stroke panjang
     is_large_area = bbox_area > 800000  # area besar
-    is_many_points = num_points > 200  # banyak titik
+    is_many_points = num_points > 800  # banyak titik
     
     # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points
@@ -658,7 +658,7 @@ def main():
         
         fig.update_traces(
             marker=dict(
-                line=dict(color='white', width=1)
+                line=dict(color='rgba(0, 0, 0, 0.8)', width=2)  # Border hitam lebih tebal dan lebih jelas
             )
         )
 

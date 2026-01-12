@@ -319,7 +319,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     # === STEP 3: POST-PROCESSING - Filter non-strictly-consecutive scribbles ===
     results = post_process_isolated_scribbles(
         results, 
-        min_consecutive=CONFIG.get('min_consecutive', 4)
+        min_consecutive=CONFIG.get('min_consecutive', 2)
     )
     
     return results, canvas

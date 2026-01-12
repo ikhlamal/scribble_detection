@@ -585,6 +585,9 @@ def main():
 
             if idx_all + 1 < len(actor_all_df):
                 finish_time = actor_all_df.iloc[idx_all + 1]['timestamp']
+                # Jika finish time di hari yang berbeda, gunakan +1 detik saja
+                if finish_time.date() != start_time.date():
+                    finish_time = start_time + timedelta(seconds=1)
             else:
                 finish_time = start_time + timedelta(seconds=1)
 

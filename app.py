@@ -374,6 +374,13 @@ def render_images(strokes_data, scribble_results):
     return img_clean, img_annotated
 
 
+def shorten_actor_name(actor_name, max_length=8):
+    """Memendekkan nama actor untuk display di gantt chart"""
+    if len(actor_name) <= max_length:
+        return actor_name
+    return actor_name[:max_length-4] + "..."
+
+
 # =========================
 # MAIN APP
 # =========================
@@ -583,6 +590,7 @@ def main():
 
             gantt_data.append({
                 'Actor': actor,
+                'ActorDisplay': shorten_actor_name(actor),  # Nama pendek untuk display
                 'Stroke': f"Stroke {i+1}",
                 'Start': start_time,
                 'Finish': finish_time,
@@ -624,24 +632,28 @@ def main():
             date_df,
             x_start='Start',
             x_end='Finish',
-            y='Actor',
+            y='ActorDisplay',  # Gunakan nama pendek
             color='Type',
             color_discrete_map={
                 'Writing': 'black',
                 'Scribble': 'red'
             },
-            hover_data=['Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'],
+            hover_data=['Actor', 'Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'],  # Tampilkan nama asli di hover
             title=f'Stroke Activity Timeline - {date.strftime("%Y-%m-%d")}'
         )
         
-        fig.update_yaxes(categoryorder='category ascending')
+        fig.update_yaxes(
+            categoryorder='category ascending',
+            title='Actor'
+        )
         fig.update_layout(
-            height=max(300, date_actors * 60),
+            height=max(400, date_actors * 80),  # Lebih tinggi per actor
             xaxis_title="Time",
             yaxis_title="Actor",
             hovermode='closest',
-            bargap=0.3,
-            bargroupgap=0.1
+            bargap=0.2,  # Dikurangi dari 0.3 agar bar lebih lebar
+            bargroupgap=0.05,  # Dikurangi dari 0.1
+            margin=dict(l=150, r=50, t=80, b=80)  # Tambah margin kiri untuk label actor
         )
         
         fig.update_traces(

@@ -32,7 +32,7 @@ CONFIG = {
     'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
     'min_scribble_area': 2000,           # minimum area stroke (filter noise)
     'min_stroke_length': 50,             # minimum length stroke (filter noise)
-    'min_consecutive': 4,                # minimum strictly consecutive scribbles
+    'min_consecutive': 2,                # minimum strictly consecutive scribbles
 }
 
 # =========================
@@ -629,12 +629,14 @@ def main():
         y_positions = []
         
         for _, row in df_type.iterrows():
+            duration = (row['Finish'] - row['Start']).total_seconds()
             hover_text = (
                 f"<b>{row['Stroke']}</b><br>"
                 f"Actor: {row['Actor']}<br>"
                 f"Type: {row['Type']}<br>"
                 f"Start: {row['Start'].strftime('%Y-%m-%d %H:%M:%S')}<br>"
                 f"End: {row['Finish'].strftime('%Y-%m-%d %H:%M:%S')}<br>"
+                f"Duration: {duration:.2f}s<br>"
                 f"Pattern Score: {row['PatternScore']:.3f}<br>"
                 f"Area: {row['Area']:.0f}<br>"
                 f"Length: {row['Length']:.1f}"

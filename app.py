@@ -167,9 +167,9 @@ def is_stroke_complex(points, bbox_area, length):
     num_points = len(points)
     
     # Kriteria kompleksitas
-    is_long = length > 300  # stroke panjang
-    is_large_area = bbox_area > 8000  # area besar
-    is_many_points = num_points > 20  # banyak titik
+    is_long = length > 600 # stroke panjang
+    is_large_area = bbox_area > 800000  # area besar
+    is_many_points = num_points > 200  # banyak titik
     
     # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points
@@ -319,7 +319,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     # === STEP 3: POST-PROCESSING - Filter non-strictly-consecutive scribbles ===
     results = post_process_isolated_scribbles(
         results, 
-        min_consecutive=CONFIG.get('min_consecutive', 4)
+        min_consecutive=CONFIG.get('min_consecutive', 2)
     )
     
     return results, canvas
@@ -558,10 +558,10 @@ def main():
     st.success("✅ Processing selesai")
 
     # ======================================================
-    # GANTT CHART
+    # GANTT CHART - GROUPED BY DATE
     # ======================================================
     st.markdown("---")
-    st.header("📊 Gantt Chart - Stroke Timeline")
+    st.header("📊 Gantt Chart - Stroke Timeline (Grouped by Date)")
 
     gantt_data = []
 
@@ -597,143 +597,71 @@ def main():
                 'UniqId': row.uniqId,
                 'PatternScore': result['pattern_score'],
                 'Area': result['bbox_area'],
-                'Length': result['length']
+                'Length': result['length'],
+                'Date': start_time.date()  # Extract date for grouping
             })
 
     gantt_df = pd.DataFrame(gantt_data)
 
-    # Create custom Gantt chart using go.Figure for better flexibility
-    fig = go.Figure()
+    # Group by unique dates
+    unique_dates = sorted(gantt_df['Date'].unique())
     
-    # Color mapping
-    color_map = {
-        'Scribble': 'rgb(239, 85, 59)',  # Red
-        'Writing': 'rgb(99, 110, 114)'    # Dark gray/black
-    }
-    
-    # Get unique actors and assign y-positions
-    unique_actors = gantt_df['Actor'].unique()
-    actor_to_y = {actor: i for i, actor in enumerate(unique_actors)}
-    
-    # Add traces for each type
-    for stroke_type in ['Writing', 'Scribble']:
-        df_type = gantt_df[gantt_df['Type'] == stroke_type]
+    st.info(f"📅 Total unique dates found: **{len(unique_dates)}**")
+
+    # Create separate Gantt chart for each date
+    for date_idx, date in enumerate(unique_dates):
+        date_df = gantt_df[gantt_df['Date'] == date].copy()
         
-        if len(df_type) == 0:
-            continue
+        st.markdown(f"### 📅 Date: {date.strftime('%Y-%m-%d')} ({date.strftime('%A')})")
         
-        # Create hover text and bar positions
-        hover_texts = []
-        x_starts = []
-        x_ends = []
-        y_positions = []
+        # Statistics for this date
+        date_strokes = len(date_df)
+        date_scribbles = len(date_df[date_df['Type'] == 'Scribble'])
+        date_writing = len(date_df[date_df['Type'] == 'Writing'])
+        date_actors = date_df['Actor'].nunique()
         
-        for _, row in df_type.iterrows():
-            # Ensure timestamps are pandas Timestamp objects
-            start_time = pd.Timestamp(row['Start'])
-            finish_time = pd.Timestamp(row['Finish'])
-            duration = (finish_time - start_time).total_seconds()
-            
-            hover_text = (
-                f"<b>{row['Stroke']}</b><br>"
-                f"Actor: {row['Actor']}<br>"
-                f"Type: {row['Type']}<br>"
-                f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}<br>"
-                f"End: {finish_time.strftime('%Y-%m-%d %H:%M:%S')}<br>"
-                f"Duration: {duration:.2f}s<br>"
-                f"Pattern Score: {row['PatternScore']:.3f}<br>"
-                f"Area: {row['Area']:.0f}<br>"
-                f"Length: {row['Length']:.1f}"
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Strokes", date_strokes)
+        col2.metric("Scribbles", date_scribbles)
+        col3.metric("Writing", date_writing)
+        col4.metric("Actors", date_actors)
+        
+        # Create Gantt chart for this date
+        fig = px.timeline(
+            date_df,
+            x_start='Start',
+            x_end='Finish',
+            y='Actor',
+            color='Type',
+            color_discrete_map={
+                'Writing': 'black',
+                'Scribble': 'red'
+            },
+            hover_data=['Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'],
+            title=f'Stroke Activity Timeline - {date.strftime("%Y-%m-%d")}'
+        )
+        
+        fig.update_yaxes(categoryorder='category ascending')
+        fig.update_layout(
+            height=max(300, date_actors * 60),
+            xaxis_title="Time",
+            yaxis_title="Actor",
+            hovermode='closest',
+            bargap=0.3,
+            bargroupgap=0.1
+        )
+        
+        fig.update_traces(
+            marker=dict(
+                line=dict(color='white', width=1)
             )
-            hover_texts.append(hover_text)
-            x_starts.append(start_time)
-            x_ends.append(finish_time)
-            y_positions.append(actor_to_y[row['Actor']])
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
         
-        # Add bars as shapes
-        for i in range(len(x_starts)):
-            fig.add_trace(go.Scatter(
-                x=[x_starts[i], x_ends[i], x_ends[i], x_starts[i], x_starts[i]],
-                y=[y_positions[i] - 0.4, y_positions[i] - 0.4, y_positions[i] + 0.4, y_positions[i] + 0.4, y_positions[i] - 0.4],
-                fill='toself',
-                fillcolor=color_map[stroke_type],
-                line=dict(color='white', width=1),
-                hovertext=hover_texts[i],
-                hoverinfo='text',
-                showlegend=(i == 0),  # Only show legend for first item of each type
-                name=stroke_type,
-                legendgroup=stroke_type
-            ))
-    
-    # Update layout for better visualization
-    fig.update_layout(
-        title={
-            'text': 'Stroke Activity Timeline by Actor',
-            'x': 0.5,
-            'xanchor': 'center'
-        },
-        xaxis=dict(
-            title='Time',
-            type='date',
-            tickformat='%Y-%m-%d %H:%M:%S',
-            showgrid=True,
-            gridcolor='lightgray',
-            gridwidth=0.5
-        ),
-        yaxis=dict(
-            title='Actor',
-            tickmode='array',
-            tickvals=list(range(len(unique_actors))),
-            ticktext=list(unique_actors),
-            showgrid=True,
-            gridcolor='lightgray',
-            gridwidth=0.5,
-            range=[-0.5, len(unique_actors) - 0.5]
-        ),
-        height=max(400, len(unique_actors) * 60 + 100),
-        hovermode='closest',
-        plot_bgcolor='white',
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        margin=dict(l=150, r=50, t=100, b=80),
-        dragmode='pan'
-    )
-    
-    # Update axes appearance
-    fig.update_xaxes(
-        showline=True,
-        linewidth=1,
-        linecolor='black',
-        mirror=True
-    )
-    
-    fig.update_yaxes(
-        showline=True,
-        linewidth=1,
-        linecolor='black',
-        mirror=True
-    )
-    
-    # Display with config for better interaction
-    st.plotly_chart(
-        fig, 
-        use_container_width=True,
-        config={
-            'displayModeBar': True,
-            'displaylogo': False,
-            'modeBarButtonsToAdd': ['pan2d', 'zoom2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
-            'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
-            'scrollZoom': True
-        }
-    )
-    
-    # Add instruction
-    st.info("💡 **Tip:** Gunakan scroll untuk zoom, drag untuk pan, atau gunakan toolbar di kanan atas untuk kontrol lebih detail")
+        # Add separator between dates (except for last one)
+        if date_idx < len(unique_dates) - 1:
+            st.markdown("---")
 
     # ======================================================
     # STATISTICS

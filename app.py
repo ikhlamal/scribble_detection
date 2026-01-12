@@ -12,34 +12,24 @@ from skimage.metrics import structural_similarity as ssim
 import io
 import base64
 
-# =========================
-# PAGE CONFIG
-# =========================
 st.set_page_config(
     page_title="Scribble Detection",
     page_icon="✍️",
     layout="wide"
 )
 
-# =========================
-# DETECTION CONFIG
-# =========================
 CANVAS_SIZE = (900, 1100)
 STROKE_WIDTH = 3
 
 CONFIG = {
-    # Pattern matching - sama seperti kode original
-    'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
-    'min_scribble_area': 2000,           # minimum area stroke (filter noise)
-    'min_stroke_length': 50,             # minimum length stroke (filter noise)
-    'min_consecutive': 4,                # minimum strictly consecutive scribbles
+    # Pattern matching
+    'pattern_threshold': 0.55,           
+    'min_scribble_area': 2000,           
+    'min_stroke_length': 50,            
+    'min_consecutive': 4,              
 }
 
-# =========================
-# UTILITY FUNCTIONS
-# =========================
 def parse_stroke(stroke_str):
-    """Parse stroke dari format string"""
     try:
         header, *pts = stroke_str.strip().split(",")
         points = []
@@ -58,7 +48,6 @@ def parse_stroke(stroke_str):
 
 
 def load_scribble_refs(folder, size=(150, 150)):
-    """Load reference scribbles"""
     refs = []
     if not os.path.exists(folder):
         return refs
@@ -75,7 +64,6 @@ def load_scribble_refs(folder, size=(150, 150)):
 
 
 def get_stroke_bbox_and_metrics(points):
-    """Get bounding box and basic metrics"""
     if len(points) < 2:
         return None
     
@@ -103,7 +91,6 @@ def get_stroke_bbox_and_metrics(points):
 
 
 def match_with_references(canvas, bbox, refs):
-    """Match region dengan references - SAMA SEPERTI KODE ORIGINAL"""
     if len(refs) == 0:
         return 0.0
     
@@ -120,14 +107,12 @@ def match_with_references(canvas, bbox, refs):
     
     region = canvas[y1:y2, x1:x2]
     
-    # Resize ke ukuran reference
     target_size = refs[0].shape
     try:
         region_resized = cv2.resize(region, (target_size[1], target_size[0]))
     except:
         return 0.0
     
-    # Threshold untuk binary
     _, region_bin = cv2.threshold(region_resized, 127, 255, cv2.THRESH_BINARY)
     
     max_score = 0.0
@@ -152,7 +137,6 @@ def match_with_references(canvas, bbox, refs):
         except:
             score3 = 0
         
-        # Combined - ambil yang tertinggi
         combined = max(score1, score2, score3)
         max_score = max(max_score, combined)
     
@@ -160,18 +144,12 @@ def match_with_references(canvas, bbox, refs):
 
 
 def is_stroke_complex(points, bbox_area, length):
-    """
-    Tentukan apakah stroke kompleks (layak jadi scribble meski isolated).
-    Stroke kompleks = banyak titik, panjang, atau area besar
-    """
     num_points = len(points)
     
-    # Kriteria kompleksitas
-    is_long = length > 600 # stroke panjang
-    is_large_area = bbox_area > 800000  # area besar
-    is_many_points = num_points > 200  # banyak titik
+    is_long = length > 600
+    is_large_area = bbox_area > 800000
+    is_many_points = num_points > 200
     
-    # Kompleks jika memenuhi salah satu kriteria dengan margin
     return is_long or is_large_area or is_many_points
 
 
@@ -184,24 +162,16 @@ def post_process_isolated_scribbles(results, min_consecutive=4):
     - TIDAK BOLEH TERPUTUS sama sekali (strictly consecutive)
     - Jika scribble beruntun < min_consecutive = BUKAN scribble (false positive)
     - KECUALI stroke tersebut kompleks (panjang/besar)
-    
-    Args:
-        results: list of detection results
-        min_consecutive: minimum jumlah scribble strictly consecutive
     """
     if len(results) == 0:
         return results
     
-    # Create copy untuk modifikasi
     processed = results.copy()
-    
-    # Find all scribble indices
     scribble_indices = [i for i, r in enumerate(results) if r['is_scribble']]
     
     if len(scribble_indices) == 0:
         return processed
-    
-    # Group scribbles into STRICTLY consecutive sequences (no gaps)
+
     def find_strictly_consecutive_groups(indices):
         """Group indices yang BENAR-BENAR berurutan (gap = 0)"""
         if not indices:
@@ -211,33 +181,23 @@ def post_process_isolated_scribbles(results, min_consecutive=4):
         current_group = [indices[0]]
         
         for i in range(1, len(indices)):
-            # STRICTLY consecutive: harus tepat +1 dari sebelumnya
             if indices[i] == indices[i-1] + 1:
                 current_group.append(indices[i])
             else:
-                # Terputus, mulai group baru
                 groups.append(current_group)
                 current_group = [indices[i]]
         
         groups.append(current_group)
         return groups
     
-    # Find strictly consecutive groups
     groups = find_strictly_consecutive_groups(scribble_indices)
-    
-    # Filter groups that are too small
     for group in groups:
         if len(group) < min_consecutive:
-            # Group terlalu kecil, cek apakah ada yang kompleks
             for idx in group:
                 result = results[idx]
-                
-                # Check if complex stroke (exception)
                 if is_stroke_complex(result['points'], result['bbox_area'], result['length']):
-                    # Stroke kompleks, tetap scribble
                     continue
                 else:
-                    # Not complex and group too small -> filter
                     processed[idx]['is_scribble'] = False
                     processed[idx]['was_filtered'] = True
                     processed[idx]['filter_reason'] = f'group_too_small_{len(group)}_strictly_consecutive'
@@ -254,12 +214,10 @@ def detect_scribbles_incremental(strokes_data, refs):
     - Stroke yang membuat deteksi scribble = dilabeli scribble
     - POST-PROCESSING: Filter isolated scribbles
     """
-    # Init canvas kosong
     canvas = np.ones(CANVAS_SIZE[::-1], dtype=np.uint8) * 255
     
     results = []
-    
-    # Process each stroke INCREMENTALLY
+
     for idx, row in strokes_data.iterrows():
         pts, _ = parse_stroke(row['description'])
         if len(pts) < 2:
@@ -274,8 +232,7 @@ def detect_scribbles_incremental(strokes_data, refs):
                 'was_filtered': False
             })
             continue
-        
-        # Get basic metrics stroke ini
+
         metrics = get_stroke_bbox_and_metrics(pts)
         if metrics is None:
             results.append({
@@ -289,18 +246,12 @@ def detect_scribbles_incremental(strokes_data, refs):
                 'was_filtered': False
             })
             continue
-        
-        # === STEP 1: Tambahkan stroke ke canvas ===
+    
         pts_int = [(int(x), int(y)) for x, y in pts]
         cv2.polylines(canvas, [np.array(pts_int)], False, 0, STROKE_WIDTH)
-        
-        # === STEP 2: CEK apakah SEKARANG ada scribble di area stroke ini ===
         is_scribble = False
         pattern_score = 0.0
-        
-        # Filter noise berdasarkan size (sama seperti original)
         if metrics['bbox_area'] >= CONFIG['min_scribble_area'] and metrics['length'] >= CONFIG['min_stroke_length']:
-            # Pattern matching di area stroke ini (dengan canvas yang SUDAH berisi stroke ini)
             if len(refs) > 0:
                 pattern_score = match_with_references(canvas, metrics['bbox'], refs)
                 is_scribble = pattern_score > CONFIG['pattern_threshold']
@@ -316,7 +267,6 @@ def detect_scribbles_incremental(strokes_data, refs):
             'was_filtered': False
         })
     
-    # === STEP 3: POST-PROCESSING - Filter non-strictly-consecutive scribbles ===
     results = post_process_isolated_scribbles(
         results, 
         min_consecutive=CONFIG.get('min_consecutive', 2)
@@ -339,10 +289,7 @@ def render_images(strokes_data, scribble_results):
         pts = result['points']
         if len(pts) < 2:
             continue
-        
-        # Color
         if result['is_scribble']:
-            # Scribble = red with intensity based on pattern score
             confidence = result['pattern_score']
             red = int(200 + 55 * min(confidence, 1.0))
             color = (red, 0, 0)
@@ -351,11 +298,9 @@ def render_images(strokes_data, scribble_results):
             color = (0, 0, 0)  # Black for writing
             text_color = (255, 200, 0)  # Yellow text
         
-        # Draw on both
         draw_clean.line(pts, fill=color, width=STROKE_WIDTH)
         draw_annotated.line(pts, fill=color, width=STROKE_WIDTH)
         
-        # Add annotation
         if len(pts) > 1:
             mid_idx = len(pts) // 2
             x, y = pts[mid_idx]
@@ -375,31 +320,18 @@ def render_images(strokes_data, scribble_results):
 
 
 def shorten_actor_name(actor_name, max_length=8):
-    """Memendekkan nama actor untuk display di gantt chart"""
     if len(actor_name) <= max_length:
         return actor_name
     return actor_name[:max_length-4] + "..."
 
-
-# =========================
-# MAIN APP
-# =========================
 def main():
     st.title("✍️ Scribble Detection")
     st.markdown("---")
-
-    # ======================================================
-    # INPUT SECTION
-    # ======================================================
     st.subheader("📁 Input Data")
     csv_file = st.file_uploader("Upload CSV File", type=["csv"])
 
     st.subheader("🎯 Processing Options")
-    
-    # Checkbox untuk limit actors
     limit_actors = st.checkbox("Batasi jumlah actor")
-
-    # Number input muncul langsung setelah checkbox dicentang
     max_actors = None
     if limit_actors:
         max_actors = st.number_input(
@@ -408,12 +340,7 @@ def main():
             step=1,
             value=5
         )
-    # Submit button
     submitted = st.button("🚀 Submit & Process", type="primary")
-
-    # ======================================================
-    # STOP JIKA BELUM SUBMIT
-    # ======================================================
     if not submitted:
         st.info("⬆️ Upload CSV dan klik **Submit & Process** untuk mulai")
         return
@@ -421,10 +348,6 @@ def main():
     if csv_file is None:
         st.error("❌ CSV belum di-upload")
         return
-
-    # ======================================================
-    # LOAD CSV
-    # ======================================================
     try:
         df = pd.read_csv(csv_file)
         st.success(f"✅ Loaded {len(df)} rows from CSV")
@@ -432,9 +355,6 @@ def main():
         st.error(f"❌ Error loading CSV: {e}")
         return
 
-    # ======================================================
-    # FILTER ADD_HW_MEMO
-    # ======================================================
     df_filtered = df[df['operation_name'] == 'ADD_HW_MEMO'].copy()
 
     if df_filtered.empty:
@@ -442,10 +362,6 @@ def main():
         return
 
     df_filtered['timestamp'] = pd.to_datetime(df_filtered['timestamp'])
-
-    # ======================================================
-    # ACTOR SELECTION
-    # ======================================================
     actors = df_filtered['actor_name_id'].unique()
 
     if limit_actors and max_actors:
@@ -453,17 +369,11 @@ def main():
 
     total_actors = len(actors)
     st.markdown(f"### 👥 Actor diproses: **{total_actors}**")
-
-    # ======================================================
-    # LOAD REFERENCE SCRIBBLES
-    # ======================================================
     ref_folder = "scribble_refs"
     refs = load_scribble_refs(ref_folder)
 
     if refs:
         st.success(f"✅ Loaded {len(refs)} reference scribble images")
-        
-        # Show references
         with st.expander("👀 View Reference Images"):
             cols = st.columns(min(len(refs), 5))
             for i, ref in enumerate(refs):
@@ -473,10 +383,6 @@ def main():
         st.error("❌ Tidak ada reference scribble image - Detection tidak bisa berjalan!")
         st.info("💡 Tambahkan reference scribble images di folder 'scribble_refs'")
         return
-
-    # ======================================================
-    # PROCESS EACH ACTOR
-    # ======================================================
     actor_data = {}
 
     progress_bar = st.progress(0.0)
@@ -500,8 +406,6 @@ def main():
             .sort_values("timestamp")
             .reset_index(drop=True)
         )
-
-        # INCREMENTAL DETECTION
         results, canvas = detect_scribbles_incremental(actor_df, refs)
         img_clean, img_annotated = render_images(actor_df, results)
 
@@ -518,9 +422,6 @@ def main():
 
     st.success("✅ Processing selesai")
 
-    # ======================================================
-    # GANTT CHART - GROUPED BY DATE
-    # ======================================================
     st.markdown("---")
     st.header("📊 Gantt Chart - Stroke Timeline")
 
@@ -533,18 +434,14 @@ def main():
 
         for i, (result, row) in enumerate(zip(results, actor_df.itertuples())):
             start_time = row.timestamp
-
-            # Cek apakah ini stroke terakhir dalam actor_df (ADD_HW_MEMO saja)
             if i + 1 < len(actor_df):
-                # Bukan stroke terakhir: pakai timestamp stroke berikutnya
                 finish_time = actor_df.iloc[i + 1]['timestamp']
             else:
-                # Stroke terakhir: finish = start + 1 detik
                 finish_time = start_time + timedelta(seconds=1)
 
             gantt_data.append({
                 'Actor': actor,
-                'ActorDisplay': shorten_actor_name(actor),  # Nama pendek untuk display
+                'ActorDisplay': shorten_actor_name(actor),
                 'Stroke': f"Stroke {i+1}",
                 'Start': start_time,
                 'Finish': finish_time,
@@ -553,23 +450,17 @@ def main():
                 'PatternScore': result['pattern_score'],
                 'Area': result['bbox_area'],
                 'Length': result['length'],
-                'Date': start_time.date()  # Extract date for grouping
+                'Date': start_time.date()
             })
 
     gantt_df = pd.DataFrame(gantt_data)
-
-    # Group by unique dates
     unique_dates = gantt_df['Date'].unique()
     
     st.info(f"📅 Total unique dates found: **{len(unique_dates)}**")
-
-    # Create separate Gantt chart for each date
     for date_idx, date in enumerate(unique_dates):
         date_df = gantt_df[gantt_df['Date'] == date].copy()
         
         st.markdown(f"### 📅 Date: {date.strftime('%Y-%m-%d')} ({date.strftime('%A')})")
-        
-        # Statistics for this date
         date_strokes = len(date_df)
         date_scribbles = len(date_df[date_df['Type'] == 'Scribble'])
         date_writing = len(date_df[date_df['Type'] == 'Writing'])
@@ -581,25 +472,24 @@ def main():
         col3.metric("Writing", date_writing)
         col4.metric("Actors", date_actors)
         
-        # Create Gantt chart for this date
         fig = px.timeline(
             date_df,
             x_start='Start',
             x_end='Finish',
-            y='ActorDisplay',  # Gunakan nama pendek
+            y='ActorDisplay', 
             color='Type',
             color_discrete_map={
                 'Writing': 'black',
                 'Scribble': 'red'
             },
-            hover_data=['Actor', 'Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'],  # Tampilkan nama asli di hover
+            hover_data=['Actor', 'Stroke', 'UniqId', 'PatternScore', 'Area', 'Length'], 
             title=f'Stroke Activity Timeline - {date.strftime("%Y-%m-%d")}'
         )
         
         fig.update_yaxes(
             categoryorder='category ascending',
             title='Actor',
-            showgrid=True,  # Tampilkan grid horizontal
+            showgrid=True,  
             gridcolor='rgba(128, 128, 128, 0.3)',  # Warna grid abu-abu
             gridwidth=1
         )
@@ -609,25 +499,20 @@ def main():
             gridwidth=1
         )
         fig.update_layout(
-            height=max(400, date_actors * 80),  # Lebih tinggi per actor
+            height=max(400, date_actors * 80),
             xaxis_title="Time",
             yaxis_title="Actor",
             hovermode='closest',
-            bargap=0.2,  # Dikurangi dari 0.3 agar bar lebih lebar
-            bargroupgap=0.05,  # Dikurangi dari 0.1
-            margin=dict(l=150, r=50, t=80, b=80),  # Tambah margin kiri untuk label actor
-            plot_bgcolor='rgba(240, 240, 240, 0.3)'  # Background abu-abu muda untuk kontras dengan gridlines
+            bargap=0.2,
+            bargroupgap=0.05, 
+            margin=dict(l=150, r=50, t=80, b=80), 
+            plot_bgcolor='rgba(240, 240, 240, 0.3)' 
         )
 
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Add separator between dates (except for last one)
         if date_idx < len(unique_dates) - 1:
             st.markdown("---")
 
-    # ======================================================
-    # STATISTICS
-    # ======================================================
     st.markdown("---")
     st.header("📈 Statistics")
 
@@ -635,7 +520,6 @@ def main():
     total_scribbles = len(gantt_df[gantt_df['Type'] == 'Scribble'])
     total_writing = len(gantt_df[gantt_df['Type'] == 'Writing'])
     
-    # Count filtered scribbles
     total_filtered = sum(1 for actor in actors for r in actor_data[actor]['results'] if r.get('was_filtered', False))
     
     avg_pattern_score_scribbles = gantt_df[gantt_df['Type'] == 'Scribble']['PatternScore'].mean() if total_scribbles > 0 else 0
@@ -653,9 +537,6 @@ def main():
     if total_filtered > 0:
         st.info(f"ℹ️ **Post-processing:** {total_filtered} isolated scribble(s) filtered sebagai false positive")
 
-    # ======================================================
-    # IMAGES PER ACTOR
-    # ======================================================
     st.markdown("---")
     st.header("🖼️ Generated Images per Actor")
 

@@ -16,7 +16,7 @@ import base64
 # PAGE CONFIG
 # =========================
 st.set_page_config(
-    page_title="Incremental Scribble Detection Dashboard",
+    page_title="Scribble Detection",
     page_icon="✍️",
     layout="wide"
 )
@@ -385,10 +385,7 @@ def shorten_actor_name(actor_name, max_length=8):
 # MAIN APP
 # =========================
 def main():
-    st.title("✍️ Incremental Scribble Detection Dashboard")
-    st.markdown("**Detection Method:** Pattern Matching (Original) + Incremental Canvas Update")
-    st.markdown("🔄 **Incremental:** Deteksi stroke yang memicu munculnya scribble")
-    st.markdown("🧹 **Post-Processing:** Filter scribbles yang tidak STRICTLY consecutive (≥4 beruntun tanpa terputus)")
+    st.title("✍️ Scribble Detection")
     st.markdown("---")
 
     # ======================================================
@@ -411,48 +408,6 @@ def main():
             step=1,
             value=5
         )
-
-    # Configuration
-    with st.expander("⚙️ Detection Configuration"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Pattern Matching**")
-            CONFIG['pattern_threshold'] = st.slider(
-                "Pattern Threshold",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.55,
-                step=0.05,
-                help="Threshold untuk classify sebagai scribble"
-            )
-            CONFIG['min_scribble_area'] = st.number_input(
-                "Min Scribble Area",
-                min_value=100,
-                max_value=10000,
-                value=2000,
-                step=100,
-                help="Minimum area stroke untuk filter noise"
-            )
-        
-        with col2:
-            st.markdown("**Post-Processing**")
-            CONFIG['min_stroke_length'] = st.number_input(
-                "Min Stroke Length",
-                min_value=10,
-                max_value=500,
-                value=50,
-                step=10,
-                help="Minimum length stroke untuk filter noise"
-            )
-            CONFIG['min_consecutive'] = st.slider(
-                "Min Strictly Consecutive",
-                min_value=2,
-                max_value=10,
-                value=4,
-                step=1,
-                help="Minimum jumlah scribble STRICTLY BERUNTUN (tidak boleh terputus)"
-            )
 
     # Submit button
     submitted = st.button("🚀 Submit & Process", type="primary")
@@ -543,7 +498,6 @@ def main():
 
         actor_df = (
             df_filtered[df_filtered['actor_name_id'] == actor]
-            .sort_values("timestamp")
             .reset_index(drop=True)
         )
 
@@ -568,7 +522,7 @@ def main():
     # GANTT CHART - GROUPED BY DATE
     # ======================================================
     st.markdown("---")
-    st.header("📊 Gantt Chart - Stroke Timeline (Grouped by Date)")
+    st.header("📊 Gantt Chart - Stroke Timeline")
 
     gantt_data = []
 

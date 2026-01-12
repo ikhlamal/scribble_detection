@@ -579,18 +579,8 @@ def main():
 
         for i, (result, row) in enumerate(zip(results, actor_df.itertuples())):
             start_time = row.timestamp
-
-            idx_all = actor_all_df[
-                actor_all_df['uniqId'] == row.uniqId
-            ].index[0]
-
-            if idx_all + 1 < len(actor_all_df):
-                finish_time = actor_all_df.iloc[idx_all + 1]['timestamp']
-                # Jika finish time di hari yang berbeda, gunakan +1 detik saja
-                if finish_time.date() != start_time.date():
-                    finish_time = start_time + timedelta(seconds=1)
-            else:
-                finish_time = start_time + timedelta(seconds=1)
+            # Semua stroke finish time = start + 1 detik
+            finish_time = start_time + timedelta(seconds=1)
 
             gantt_data.append({
                 'Actor': actor,

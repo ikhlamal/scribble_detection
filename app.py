@@ -32,7 +32,7 @@ CONFIG = {
     'pattern_threshold': 0.55,           # threshold untuk classify sebagai scribble
     'min_scribble_area': 2000,           # minimum area stroke (filter noise)
     'min_stroke_length': 50,             # minimum length stroke (filter noise)
-    'min_consecutive': 2,                # minimum strictly consecutive scribbles
+    'min_consecutive': 4,                # minimum strictly consecutive scribbles
 }
 
 # =========================
@@ -175,7 +175,7 @@ def is_stroke_complex(points, bbox_area, length):
     return is_long or is_large_area or is_many_points
 
 
-def post_process_isolated_scribbles(results, min_consecutive=2):
+def post_process_isolated_scribbles(results, min_consecutive=4):
     """
     POST-PROCESSING: Filter scribbles yang tidak strictly consecutive.
     
@@ -319,7 +319,7 @@ def detect_scribbles_incremental(strokes_data, refs):
     # === STEP 3: POST-PROCESSING - Filter non-strictly-consecutive scribbles ===
     results = post_process_isolated_scribbles(
         results, 
-        min_consecutive=CONFIG.get('min_consecutive', 2)
+        min_consecutive=CONFIG.get('min_consecutive', 4)
     )
     
     return results, canvas
@@ -522,7 +522,7 @@ def main():
     # GANTT CHART - GROUPED BY DATE
     # ======================================================
     st.markdown("---")
-    st.header("📊 Gantt Chart - Stroke Timeline (Grouped by Date)")
+    st.header("📊 Gantt Chart - Stroke Timeline")
 
     gantt_data = []
 

@@ -24,7 +24,7 @@ STROKE_WIDTH = 3
 CONFIG = {
     # Pattern matching
     'pattern_threshold': 0.55,           
-    'min_scribble_area': 2000,           
+    'min_scribble_area': 0,           
     'min_stroke_length': 50,            
     'min_consecutive': 4,              
 }

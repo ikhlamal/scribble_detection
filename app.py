@@ -117,28 +117,13 @@ def match_with_references(canvas, bbox, refs):
     
     max_score = 0.0
     for ref in refs:
-        # SSIM
-        try:
-            score1 = ssim(region_bin, ref, data_range=255)
-        except:
-            score1 = 0
-        
-        # Template matching
-        try:
-            result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCOEFF_NORMED)
-            _, score2, _, _ = cv2.minMaxLoc(result)
-        except:
-            score2 = 0
-        
-        # Correlation
+        # Normalized Cross-Correlation
         try:
             result = cv2.matchTemplate(region_bin, ref, cv2.TM_CCORR_NORMED)
-            _, score3, _, _ = cv2.minMaxLoc(result)
+            _, score, _, _ = cv2.minMaxLoc(result)
+            max_score = max(max_score, score)
         except:
-            score3 = 0
-        
-        combined = max(score1, score2, score3)
-        max_score = max(max_score, combined)
+            continue
     
     return max_score
 
